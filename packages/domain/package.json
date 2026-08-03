@@ -1,0 +1,16 @@
+{
+  "name": "@kspdb/domain",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./types": "./src/types.js",
+    "./schemas": "./src/schemas.js",
+    "./thresholds": "./src/thresholds.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}
