@@ -9,7 +9,17 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum TopologySource {
+// Used on Transformer: what the department has on file (ground-truth labelling)
+// RECORDED = authoritative topology exists; MISSING = no topology on file
+// 'INFERRED' is never stored here — inference is a runtime Topology Service concept.
+enum GroundTruthTopologySource {
+  RECORDED
+  MISSING
+}
+
+// Used on TopologyEdge: how the runtime Topology Service derived this edge
+// AUTHORITATIVE = built from recorded parent_pole_id; INFERRED = MST heuristic
+enum EdgeTopologySource {
   AUTHORITATIVE
   INFERRED
 }
@@ -79,13 +89,15 @@ model Feeder {
 }
 
 model Transformer {
-  id               String         @id
-  feeder_id        String         @map("feeder_id")
-  lat              Float
-  lon              Float
-  capacity_kva     Float          @map("capacity_kva")
-  households_served Int           @map("households_served")
-  topology_source  TopologySource @map("topology_source")
+  id                String                  @id
+  feeder_id         String                  @map("feeder_id")
+  lat               Float
+  lon               Float
+  capacity_kva      Float                   @map("capacity_kva")
+  households_served Int                     @map("households_served")
+  // RECORDED = dept has topology on file; MISSING = no topology recorded.
+  // The registry export (Step 5) sets this. Never INFERRED here.
+  topology_source   GroundTruthTopologySource @map("topology_source")
 
   @@map("transformers")
 }
@@ -144,12 +156,13 @@ model PoleState {
 }
 
 model TopologyEdge {
-  id             String         @id @default(uuid())
-  parent_pole_id String         @map("parent_pole_id")
-  child_pole_id  String         @map("child_pole_id")
-  source         TopologySource
+  id             String             @id @default(uuid())
+  parent_pole_id String             @map("parent_pole_id")
+  child_pole_id  String             @map("child_pole_id")
+  // AUTHORITATIVE = derived from recorded topology; INFERRED = MST heuristic (Step 8)
+  source         EdgeTopologySource
   weight         Float?
-  ambiguous      Boolean        @default(false)
+  ambiguous      Boolean            @default(false)
 
   @@map("topology_edges")
 }
@@ -167,17 +180,18 @@ model ScheduledOutage {
 }
 
 model Incident {
-  id                       String          @id
+  id                       String             @id
   type                     IncidentType
-  upstream_live_pole_id    String?         @map("upstream_live_pole_id")
-  downstream_dark_pole_ids Json            @map("downstream_dark_pole_ids")
-  affected_pole_ids        Json            @map("affected_pole_ids")
-  affected_count           Int             @map("affected_count")
-  topology_source          TopologySource  @map("topology_source")
+  upstream_live_pole_id    String?            @map("upstream_live_pole_id")
+  downstream_dark_pole_ids Json               @map("downstream_dark_pole_ids")
+  affected_pole_ids        Json               @map("affected_pole_ids")
+  affected_count           Int                @map("affected_count")
+  // Dominant edge source used to localize this incident (AUTHORITATIVE or INFERRED)
+  topology_source          EdgeTopologySource @map("topology_source")
   confidence               ConfidenceLevel
-  confidence_reasons       Json            @map("confidence_reasons")
-  scheduled_outage_overlap Boolean         @default(false) @map("scheduled_outage_overlap")
-  first_detected_at        DateTime        @default(now()) @map("first_detected_at")
+  confidence_reasons       Json               @map("confidence_reasons")
+  scheduled_outage_overlap Boolean            @default(false) @map("scheduled_outage_overlap")
+  first_detected_at        DateTime           @default(now()) @map("first_detected_at")
   ticket                   Ticket?
 
   @@map("incidents")
