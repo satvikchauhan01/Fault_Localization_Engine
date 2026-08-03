@@ -12,5 +12,8 @@
   },
   "scripts": {
     "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.22.4"
   }
 }
