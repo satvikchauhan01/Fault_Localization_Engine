@@ -1,0 +1,15 @@
+# Docker build context exclusions
+# Prevents large/sensitive files from being sent to the Docker daemon
+
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+coverage
+*.md
+!README.md
+.vscode
+.idea

@@ -9,11 +9,13 @@
     "test": "vitest run",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
-    "db:migrate": "prisma migrate dev"
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "node src/scripts/seed.js"
   },
   "dependencies": {
     "@kspdb/domain": "*",
-    "@prisma/client": "^5.11.0"
+    "@prisma/client": "^5.11.0",
+    "pg": "^8.11.5"
   },
   "devDependencies": {
     "prisma": "^5.11.0"

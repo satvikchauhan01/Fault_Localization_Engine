@@ -1,0 +1,89 @@
+# KSPDB Fault Localization Engine — Docker Compose
+#
+# Single-command startup: `docker compose up`
+#
+# Services:
+#   postgres  — PostgreSQL 16 (persistent volume)
+#   backend   — Node.js/Fastify API (auto-migrates + auto-seeds on start)
+#   frontend  — React SPA served via nginx (proxies /api → backend)
+#
+# First start:
+#   - postgres initialises the database
+#   - backend waits for postgres, runs `prisma migrate deploy`, then `seed.js`
+#   - seed.js generates ~4,000 poles of synthetic data and inserts them
+#
+# Second+ start (no data loss):
+#   - seed.js detects existing Feeder rows and exits early (idempotent)
+#
+# Force a clean reseed:
+#   FORCE_RESEED=1 docker compose up backend
+#
+# Environment:
+#   Copy .env.example to .env and edit as needed. Docker Compose reads .env
+#   automatically. The AI explain feature requires ANTHROPIC_API_KEY to be set
+#   for LLM summaries; it degrades gracefully to a template if the key is missing.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kspdb_fault_localization
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kspdb_fault_localization"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    ports:
+      - "5432:5432"   # Exposed for local dev/inspection; remove in production
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/kspdb_fault_localization?schema=public
+      PORT: 3000
+      HOST: 0.0.0.0
+      NODE_ENV: production
+      # Optional: set to enable AI incident explanations
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Set to 1 to wipe + re-seed the database on next restart
+      FORCE_RESEED: ${FORCE_RESEED:-0}
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
