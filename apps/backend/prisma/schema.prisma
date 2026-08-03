@@ -1,0 +1,207 @@
+// Prisma schema matching Section F domain contracts and telemetry_inbox queue
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TopologySource {
+  AUTHORITATIVE
+  INFERRED
+}
+
+enum TelemetryEventType {
+  heartbeat
+  power_lost
+  power_restored
+  boot
+}
+
+enum PoleStatus {
+  LIVE
+  CONFIRMED_DARK
+  STALE
+  OFFLINE_UNKNOWN
+  SENSOR_SUSPECT
+}
+
+enum ScheduledOutageScope {
+  DT
+  FEEDER
+  SPAN
+}
+
+enum IncidentType {
+  SPAN
+  DT
+  FEEDER
+  RANGE
+}
+
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TicketState {
+  DETECTED
+  ACKNOWLEDGED
+  CREW_ASSIGNED
+  RESOLVED
+  VERIFIED
+  CLOSED
+}
+
+enum SimulatorFaultType {
+  SPAN
+  DT
+  FEEDER
+}
+
+enum InboxStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+model Feeder {
+  id        String   @id
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("feeders")
+}
+
+model Transformer {
+  id               String         @id
+  feeder_id        String         @map("feeder_id")
+  lat              Float
+  lon              Float
+  capacity_kva     Float          @map("capacity_kva")
+  households_served Int           @map("households_served")
+  topology_source  TopologySource @map("topology_source")
+
+  @@map("transformers")
+}
+
+model Pole {
+  id             String   @id
+  lat            Float
+  lon            Float
+  dt_id          String   @map("dt_id")
+  feeder_id      String   @map("feeder_id")
+  seq_on_line    Int?     @map("seq_on_line")
+  parent_pole_id String?  @map("parent_pole_id")
+  device_id      String?  @map("device_id")
+  ward           String?
+  pincode        String?
+
+  @@map("poles")
+}
+
+model Device {
+  id         String   @id
+  pole_id    String?  @map("pole_id")
+  fw_version String   @map("fw_version")
+  first_seen DateTime @map("first_seen")
+  last_seen  DateTime @map("last_seen")
+
+  @@map("devices")
+}
+
+model TelemetryInbox {
+  id                 String             @id @default(uuid())
+  device_id          String             @map("device_id")
+  pole_id            String             @map("pole_id")
+  event              TelemetryEventType
+  energized          Boolean
+  device_ts          DateTime           @map("device_ts")
+  seq                Int
+  battery_mv         Int?               @map("battery_mv")
+  rssi               Int?
+  fw                 String
+  server_received_at DateTime           @default(now()) @map("server_received_at")
+  status             InboxStatus        @default(PENDING)
+  processed_at       DateTime?          @map("processed_at")
+
+  @@map("telemetry_inbox")
+}
+
+model PoleState {
+  pole_id           String     @id @map("pole_id")
+  status            PoleStatus
+  last_confirmed_at DateTime   @map("last_confirmed_at")
+  last_event_seq    Int        @map("last_event_seq")
+  evidence_summary  String     @map("evidence_summary")
+
+  @@map("pole_states")
+}
+
+model TopologyEdge {
+  id             String         @id @default(uuid())
+  parent_pole_id String         @map("parent_pole_id")
+  child_pole_id  String         @map("child_pole_id")
+  source         TopologySource
+  weight         Float?
+  ambiguous      Boolean        @default(false)
+
+  @@map("topology_edges")
+}
+
+model ScheduledOutage {
+  id         String               @id
+  scope      ScheduledOutageScope
+  target_id  String               @map("target_id")
+  start      DateTime
+  end        DateTime
+  reason     String
+  fetched_at DateTime             @default(now()) @map("fetched_at")
+
+  @@map("scheduled_outages")
+}
+
+model Incident {
+  id                       String          @id
+  type                     IncidentType
+  upstream_live_pole_id    String?         @map("upstream_live_pole_id")
+  downstream_dark_pole_ids Json            @map("downstream_dark_pole_ids")
+  affected_pole_ids        Json            @map("affected_pole_ids")
+  affected_count           Int             @map("affected_count")
+  topology_source          TopologySource  @map("topology_source")
+  confidence               ConfidenceLevel
+  confidence_reasons       Json            @map("confidence_reasons")
+  scheduled_outage_overlap Boolean         @default(false) @map("scheduled_outage_overlap")
+  first_detected_at        DateTime        @default(now()) @map("first_detected_at")
+  ticket                   Ticket?
+
+  @@map("incidents")
+}
+
+model Ticket {
+  id           String      @id
+  incident_id  String      @unique @map("incident_id")
+  incident     Incident    @relation(fields: [incident_id], references: [id], onDelete: Cascade)
+  state        TicketState @default(DETECTED)
+  created_at   DateTime    @default(now()) @map("created_at")
+  updated_at   DateTime    @updatedAt @map("updated_at")
+  resolved_at  DateTime?   @map("resolved_at")
+  verified_at  DateTime?   @map("verified_at")
+
+  @@map("tickets")
+}
+
+model SimulatorFault {
+  id          String             @id
+  type        SimulatorFaultType
+  target      String
+  injected_at DateTime           @default(now()) @map("injected_at")
+  repaired_at DateTime?          @map("repaired_at")
+
+  @@map("simulator_faults")
+}
