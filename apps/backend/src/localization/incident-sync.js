@@ -65,7 +65,8 @@ export async function syncIncidents(computedIncidents, dtId, tx) {
           affected_count: inc.affected_count,
           topology_source: inc.topology_source,
           confidence: inc.confidence,
-          confidence_reasons: inc.confidence_reasons
+          confidence_reasons: inc.confidence_reasons,
+          scheduled_outage_overlap: inc.scheduled_outage_overlap ?? false
         }
       });
       // Remove it from activeForDt so we don't accidentally match it again for another distinct incident
@@ -85,6 +86,7 @@ export async function syncIncidents(computedIncidents, dtId, tx) {
           topology_source: inc.topology_source,
           confidence: inc.confidence,
           confidence_reasons: inc.confidence_reasons,
+          scheduled_outage_overlap: inc.scheduled_outage_overlap ?? false,
           ticket: {
             create: {
               id: randomUUID(),

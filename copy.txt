@@ -1,0 +1,3 @@
+Continue from the current project state and existing master roadmap.
+ Before making any changes, 
+ inspect the work already completed and the relevant repository files

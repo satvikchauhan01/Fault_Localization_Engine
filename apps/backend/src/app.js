@@ -7,6 +7,7 @@
 import Fastify from 'fastify';
 import { prisma as defaultPrisma } from './db.js';
 import { telemetryRoutes } from './routes/telemetry.js';
+import { scheduledOutageRoutes } from './routes/scheduled-outages.js';
 
 /**
  * Builds and configures Fastify server instance.
@@ -30,6 +31,9 @@ export function buildApp(opts = {}) {
 
   // Telemetry routes
   app.register(telemetryRoutes, { prisma });
+
+  // Scheduled outages routes
+  app.register(scheduledOutageRoutes, { prisma });
 
   return app;
 }

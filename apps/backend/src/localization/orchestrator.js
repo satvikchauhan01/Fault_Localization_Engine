@@ -3,10 +3,11 @@ import { evaluateDtRollup, applyRollup } from './rollup.js';
 import { expandRangeIncident } from './range.js';
 import { buildConfidenceEvidence, evaluateConfidence } from './confidence.js';
 import { buildAdjacency } from './frontier.js'; // to get childrenOf
+import { checkScheduledOutageOverlap } from '../scheduled-outages/adapter.js';
 
 /**
  * Runs the full localization pipeline for a single DT subtree.
- * Fetches all necessary state from the database, runs the pure pure localization
+ * Fetches all necessary state from the database, runs the pure localization
  * functions, and returns a list of actionable incidents (faults).
  * 
  * @param {string} dtId The DT ID to localize
@@ -19,6 +20,11 @@ export async function runLocalizationForDt(dtId, tx) {
     where: { dt_id: dtId }
   });
   const poleIds = poles.map(p => p.id);
+
+  const transformer = await tx.transformer.findUnique({
+    where: { id: dtId }
+  });
+  const feederId = transformer ? transformer.feeder_id : (poles[0]?.feeder_id || null);
 
   const edges = await tx.topologyEdge.findMany({
     where: { child_pole_id: { in: poleIds } }
@@ -90,11 +96,18 @@ export async function runLocalizationForDt(dtId, tx) {
   // 6. Expand ranges and evaluate confidence
   for (const inc of baseIncidents) {
     if (inc.type === 'DT_FAULT') {
+      const hasOutageOverlap = await checkScheduledOutageOverlap({
+        dtId,
+        feederId,
+        affectedPoleIds: inc.affected_pole_ids,
+        incidentTime: Date.now(),
+      }, tx);
+
       const evidence = buildConfidenceEvidence(
         { source: 'AUTHORITATIVE', ambiguous: false, child_pole_id: inc.affected_pole_ids[0] }, 
         null, 
         [], 
-        false, 
+        hasOutageOverlap, 
         poleStates, 
         inc.affected_pole_ids
       );
@@ -103,6 +116,7 @@ export async function runLocalizationForDt(dtId, tx) {
         ...inc,
         confidence: conf.level,
         confidence_reasons: conf.reasons,
+        scheduled_outage_overlap: evidence.scheduled_outage_overlap,
         topology_source: 'AUTHORITATIVE', // DT rollup relies on membership, usually authoritative
       });
     } else {
@@ -137,11 +151,18 @@ export async function runLocalizationForDt(dtId, tx) {
         };
       }
 
+      const hasOutageOverlap = await checkScheduledOutageOverlap({
+        dtId,
+        feederId,
+        affectedPoleIds: localizedInc.affected_pole_ids,
+        incidentTime: Date.now(),
+      }, tx);
+
       const evidence = buildConfidenceEvidence(
         localizedInc, 
         isRange ? localizedInc : null, 
         sensorSuspects, 
-        false, 
+        hasOutageOverlap, 
         poleStates, 
         localizedInc.affected_pole_ids
       );
@@ -150,7 +171,8 @@ export async function runLocalizationForDt(dtId, tx) {
       finalIncidents.push({
         ...localizedInc,
         confidence: conf.level,
-        confidence_reasons: conf.reasons
+        confidence_reasons: conf.reasons,
+        scheduled_outage_overlap: evidence.scheduled_outage_overlap,
       });
     }
   }
