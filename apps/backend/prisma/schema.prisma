@@ -201,14 +201,17 @@ model Incident {
 }
 
 model Ticket {
-  id           String      @id
-  incident_id  String      @unique @map("incident_id")
-  incident     Incident    @relation(fields: [incident_id], references: [id], onDelete: Cascade)
-  state        TicketState @default(DETECTED)
-  created_at   DateTime    @default(now()) @map("created_at")
-  updated_at   DateTime    @updatedAt @map("updated_at")
-  resolved_at  DateTime?   @map("resolved_at")
-  verified_at  DateTime?   @map("verified_at")
+  id                  String      @id
+  incident_id         String      @unique @map("incident_id")
+  incident            Incident    @relation(fields: [incident_id], references: [id], onDelete: Cascade)
+  state               TicketState @default(DETECTED)
+  created_at          DateTime    @default(now()) @map("created_at")
+  updated_at          DateTime    @updatedAt @map("updated_at")
+  resolved_at         DateTime?   @map("resolved_at")
+  verified_at         DateTime?   @map("verified_at")
+  // Poles from affected_pole_ids that are still dark, populated when RESOLVED but not verifiable.
+  // Null when verification has not been attempted or ticket is VERIFIED/CLOSED.
+  still_dark_pole_ids Json?       @map("still_dark_pole_ids")
 
   @@map("tickets")
 }
