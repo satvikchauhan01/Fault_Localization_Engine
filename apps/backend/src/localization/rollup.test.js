@@ -236,3 +236,89 @@ describe('applyRollup', () => {
     expect(incidents.some((i) => i.child_pole_id === 'pB1')).toBe(true);
   });
 });
+
+// ─── Correlation Window Enforcement (5-Minute Rule) ─────────────────────────
+
+describe('Correlation Window Enforcement (5-minute window)', () => {
+  function stateMapWithTimestamps(entries) {
+    return new Map(entries.map(([id, status, lastConfirmedAt]) => [id, { status, last_confirmed_at: lastConfirmedAt }]));
+  }
+
+  it('does NOT rollup when dark transitions occur outside 5-minute window (e.g. 6 mins apart)', () => {
+    const ids = makePoles(10); // 10 poles
+    const baseTime = 1_000_000;
+    const SIX_MINS = 6 * 60 * 1000; // 360,000 ms
+
+    // p1..p8 transitioned dark 6 minutes ago (baseTime)
+    // p9 transitioned dark at currentTime (baseTime + SIX_MINS)
+    // p10 has no state (unobserved)
+    const entries = [
+      ...ids.slice(0, 8).map((id) => [id, 'CONFIRMED_DARK', baseTime]),
+      ['p9', 'CONFIRMED_DARK', baseTime + SIX_MINS],
+    ];
+    const states = stateMapWithTimestamps(entries);
+    const poles = poleMap(ids.map((id) => [id, true]));
+
+    // Evaluate at currentTime = baseTime + SIX_MINS
+    const result = evaluateDtRollup('dt-1', ids, states, poles, baseTime + SIX_MINS);
+
+    // Only p9 is within 5 minutes of baseTime + SIX_MINS (cutoff = baseTime + 1 min).
+    // p1..p8 are at baseTime, which is < cutoff.
+    // 1 / 10 = 10% < 90% -> Rollup does NOT fire.
+    expect(result).toBeNull();
+  });
+
+  it('DOES rollup when dark transitions occur inside 5-minute window (e.g. 2 mins apart)', () => {
+    const ids = makePoles(10); // 10 poles
+    const baseTime = 1_000_000;
+    const TWO_MINS = 2 * 60 * 1000; // 120,000 ms
+
+    // p1..p8 transitioned dark at baseTime
+    // p9 transitioned dark 2 minutes later (baseTime + TWO_MINS)
+    const entries = [
+      ...ids.slice(0, 8).map((id) => [id, 'CONFIRMED_DARK', baseTime]),
+      ['p9', 'CONFIRMED_DARK', baseTime + TWO_MINS],
+    ];
+    const states = stateMapWithTimestamps(entries);
+    const poles = poleMap(ids.map((id) => [id, true]));
+
+    // Evaluate at currentTime = baseTime + TWO_MINS
+    const result = evaluateDtRollup('dt-1', ids, states, poles, baseTime + TWO_MINS);
+
+    // All 9 dark poles are within the 5-minute window (diff is 2 mins <= 5 mins).
+    // 9 / 10 = 90% >= 90% -> Rollup FIRES.
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('DT_FAULT');
+    expect(result.dark_count).toBe(9);
+    expect(result.dark_ratio).toBe(0.9);
+  });
+
+  it('enforces 5-minute correlation window across feeder rollup', () => {
+    const dtIds = ['dt-a', 'dt-b'];
+    const dtPoleMap = new Map([
+      ['dt-a', makePoles(5, 'a')],
+      ['dt-b', makePoles(5, 'b')],
+    ]);
+    const aPoles = makePoles(5, 'a');
+    const bPoles = makePoles(5, 'b');
+
+    const baseTime = 1_000_000;
+    const SEVEN_MINS = 7 * 60 * 1000;
+
+    // dt-a poles dark 7 minutes ago
+    // dt-b poles dark at baseTime + SEVEN_MINS
+    const entries = [
+      ...aPoles.map((id) => [id, 'CONFIRMED_DARK', baseTime]),
+      ...bPoles.map((id) => [id, 'CONFIRMED_DARK', baseTime + SEVEN_MINS]),
+    ];
+    const states = stateMapWithTimestamps(entries);
+    const poles = poleMap([...aPoles, ...bPoles].map((id) => [id, true]));
+
+    const { feederRollup } = evaluateFeederRollup('feeder-1', dtIds, dtPoleMap, states, poles, baseTime + SEVEN_MINS);
+
+    // dt-a dark poles (7 mins old) fall outside 5-min window relative to baseTime + SEVEN_MINS.
+    // Only dt-b poles (5/10 = 50%) are correlated -> Feeder rollup does NOT fire.
+    expect(feederRollup).toBeNull();
+  });
+});
+

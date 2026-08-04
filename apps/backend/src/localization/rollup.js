@@ -48,12 +48,20 @@ const CORRELATION_WINDOW_MS = 5 * 60 * 1000;
  *
  * @param {string}                         dtId
  * @param {string[]}                       poleMemberIds   All pole IDs belonging to this DT
- * @param {Map<string,{status:string}>}    poleStates      Current observed pole states
+ * @param {Map<string,{status:string,last_confirmed_at?:number}>} poleStates Current observed pole states
  * @param {Map<string,{device_id:string}>} poleMap         Registry pole metadata
- * @param {number}                         [windowMs]      Optional override for correlation window
+ * @param {number|null}                    [currentTime]   Current time or reference timestamp (ms)
+ * @param {number}                         [windowMs]      Correlation window duration (ms)
  * @returns {RollupResult|null}  null if threshold not met
  */
-export function evaluateDtRollup(dtId, poleMemberIds, poleStates, poleMap, _windowMs = CORRELATION_WINDOW_MS) {
+export function evaluateDtRollup(
+  dtId,
+  poleMemberIds,
+  poleStates,
+  poleMap,
+  currentTime = null,
+  windowMs = CORRELATION_WINDOW_MS
+) {
   // Partition poles into monitored (has device) vs unmonitored
   const monitoredPoleIds = poleMemberIds.filter((id) => {
     const pole = poleMap.get(id);
@@ -65,30 +73,46 @@ export function evaluateDtRollup(dtId, poleMemberIds, poleStates, poleMap, _wind
     return null;
   }
 
-  let darkCount = 0;
   let hasLivePole = false;
-  const darkPoleIds = [];
+  const darkPoles = [];
 
   for (const id of monitoredPoleIds) {
     const state = poleStates.get(id);
     const status = state ? state.status : null;
 
     if (status === 'CONFIRMED_DARK') {
-      darkCount++;
-      darkPoleIds.push(id);
+      const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
+      darkPoles.push({ id, lastConfirmedAt });
     } else if (status === 'LIVE') {
       hasLivePole = true;
     }
   }
 
+  if (hasLivePole || darkPoles.length === 0) {
+    return null;
+  }
+
+  // Determine reference time for the 5-minute correlation window
+  const refTime = currentTime !== null
+    ? currentTime
+    : Math.max(...darkPoles.map((p) => p.lastConfirmedAt));
+
+  const windowCutoff = refTime > 0 ? refTime - windowMs : 0;
+
+  // Filter dark poles to only those observed dark within the 5-minute correlation window
+  const correlatedDarkPoleIds = darkPoles
+    .filter((p) => p.lastConfirmedAt >= windowCutoff)
+    .map((p) => p.id);
+
+  const darkCount = correlatedDarkPoleIds.length;
   const darkRatio = darkCount / monitoredPoleIds.length;
 
-  // Rule 5: ≥90% dark AND no LIVE pole observed
-  if (darkRatio >= ROLLUP_THRESHOLD && !hasLivePole) {
+  // Rule 5: ≥90% dark within window AND no LIVE pole observed
+  if (darkRatio >= ROLLUP_THRESHOLD) {
     return {
       type: 'DT_FAULT',
       target_id: dtId,
-      affected_pole_ids: darkPoleIds,
+      affected_pole_ids: correlatedDarkPoleIds,
       dark_count: darkCount,
       monitored_count: monitoredPoleIds.length,
       dark_ratio: darkRatio,
@@ -103,29 +127,39 @@ export function evaluateDtRollup(dtId, poleMemberIds, poleStates, poleMap, _wind
  * Evaluates whether a feeder qualifies for a FEEDER_FAULT rollup.
  *
  * A feeder rollup requires ≥90% of ALL monitored poles across ALL DTs
- * on the feeder to be CONFIRMED_DARK, with no LIVE pole on any DT.
+ * on the feeder to be CONFIRMED_DARK (within the correlation window),
+ * with no LIVE pole on any DT.
  *
  * @param {string}                         feederId
  * @param {string[]}                       dtIds           All DT IDs on this feeder
  * @param {Map<string,string[]>}           dtPoleMap       dtId → pole IDs for that DT
- * @param {Map<string,{status:string}>}    poleStates
+ * @param {Map<string,{status:string,last_confirmed_at?:number}>} poleStates
  * @param {Map<string,{device_id:string}>} poleMap
+ * @param {number|null}                    [currentTime]   Current time or reference timestamp (ms)
+ * @param {number}                         [windowMs]      Correlation window duration (ms)
  * @returns {{ feederRollup: RollupResult|null, dtRollups: Map<string, RollupResult|null> }}
  */
-export function evaluateFeederRollup(feederId, dtIds, dtPoleMap, poleStates, poleMap) {
+export function evaluateFeederRollup(
+  feederId,
+  dtIds,
+  dtPoleMap,
+  poleStates,
+  poleMap,
+  currentTime = null,
+  windowMs = CORRELATION_WINDOW_MS
+) {
   // First evaluate each DT individually (needed for nesting/records)
   const dtRollups = new Map();
   for (const dtId of dtIds) {
     const poleIds = dtPoleMap.get(dtId) || [];
-    const dtResult = evaluateDtRollup(dtId, poleIds, poleStates, poleMap);
+    const dtResult = evaluateDtRollup(dtId, poleIds, poleStates, poleMap, currentTime, windowMs);
     dtRollups.set(dtId, dtResult);
   }
 
   // Now evaluate the feeder as a whole — aggregate all monitored poles
   let totalMonitored = 0;
-  let totalDark = 0;
   let feederHasLive = false;
-  const allDarkPoleIds = [];
+  const feederDarkPoles = [];
 
   for (const dtId of dtIds) {
     const poleIds = dtPoleMap.get(dtId) || [];
@@ -139,26 +173,38 @@ export function evaluateFeederRollup(feederId, dtIds, dtPoleMap, poleStates, pol
       const status = state ? state.status : null;
 
       if (status === 'CONFIRMED_DARK') {
-        totalDark++;
-        allDarkPoleIds.push(id);
+        const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
+        feederDarkPoles.push({ id, lastConfirmedAt });
       } else if (status === 'LIVE') {
         feederHasLive = true;
       }
     }
   }
 
-  if (totalMonitored === 0) {
+  if (totalMonitored === 0 || feederHasLive || feederDarkPoles.length === 0) {
     return { feederRollup: null, dtRollups };
   }
 
+  // Determine reference time for feeder correlation window
+  const refTime = currentTime !== null
+    ? currentTime
+    : Math.max(...feederDarkPoles.map((p) => p.lastConfirmedAt));
+
+  const windowCutoff = refTime > 0 ? refTime - windowMs : 0;
+
+  const correlatedDarkPoleIds = feederDarkPoles
+    .filter((p) => p.lastConfirmedAt >= windowCutoff)
+    .map((p) => p.id);
+
+  const totalDark = correlatedDarkPoleIds.length;
   const feederDarkRatio = totalDark / totalMonitored;
 
-  // Rule 6: ≥90% of all monitored poles on the feeder are dark, no LIVE pole anywhere
-  if (feederDarkRatio >= ROLLUP_THRESHOLD && !feederHasLive) {
+  // Rule 6: ≥90% of all monitored poles on the feeder are dark within window, no LIVE pole anywhere
+  if (feederDarkRatio >= ROLLUP_THRESHOLD) {
     const feederRollup = {
       type: 'FEEDER_FAULT',
       target_id: feederId,
-      affected_pole_ids: allDarkPoleIds,
+      affected_pole_ids: correlatedDarkPoleIds,
       dark_count: totalDark,
       monitored_count: totalMonitored,
       dark_ratio: feederDarkRatio,
