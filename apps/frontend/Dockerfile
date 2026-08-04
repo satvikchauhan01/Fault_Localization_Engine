@@ -17,12 +17,11 @@ COPY apps/frontend ./apps/frontend
 
 # Build static assets (vite build)
 WORKDIR /app/apps/frontend
-RUN npm run build 2>/dev/null || echo "[frontend] No build script yet — serving placeholder"
+RUN mkdir -p dist && (npm run build || echo "[frontend] No build script yet — serving placeholder")
 
 # ── Stage 2: serve with nginx ─────────────────────────────────────────────────
 FROM nginx:stable-alpine AS runtime
-COPY --from=build /app/apps/frontend/dist /usr/share/nginx/html 2>/dev/null || \
-  mkdir -p /usr/share/nginx/html
+COPY --from=build /app/apps/frontend/dist /usr/share/nginx/html
 
 # Nginx config: proxy /api to backend, serve SPA from root
 COPY apps/frontend/nginx.conf /etc/nginx/conf.d/default.conf
