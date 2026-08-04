@@ -227,42 +227,76 @@ describe('detectFrontier — Rule 7: unmonitored range edges', () => {
   });
 });
 
-// ─── Integration: mixed AUTHORITATIVE / INFERRED edges ───────────────────────
+// ─── Step 13: Span-level localization test matrix ───────────────────────────
 
-describe('detectFrontier — integration', () => {
-  it('handles a realistic branched tree with multiple fault zones', () => {
-    /**
-     * Tree:
-     *           root(LIVE)
-     *          /          \
-     *        A(LIVE)      B(DARK)
-     *        |            |
-     *       A1(DARK)    B1(DARK)
-     *        |
-     *       A2(DARK)
-     *
-     * Expected: one frontier at root→B (collapse stops B1),
-     *           one frontier at A→A1 (collapse stops A2)
-     */
-    const edges = [
-      { parent_pole_id: 'root', child_pole_id: 'A', source: 'AUTHORITATIVE', ambiguous: false },
-      { parent_pole_id: 'root', child_pole_id: 'B', source: 'AUTHORITATIVE', ambiguous: false },
-      { parent_pole_id: 'A', child_pole_id: 'A1', source: 'AUTHORITATIVE', ambiguous: false },
-      { parent_pole_id: 'A1', child_pole_id: 'A2', source: 'AUTHORITATIVE', ambiguous: false },
-      { parent_pole_id: 'B', child_pole_id: 'B1', source: 'AUTHORITATIVE', ambiguous: false },
-    ];
-    const states = stateMap([
-      ['root', 'LIVE'], ['A', 'LIVE'],
-      ['B', 'CONFIRMED_DARK'], ['B1', 'CONFIRMED_DARK'],
-      ['A1', 'CONFIRMED_DARK'], ['A2', 'CONFIRMED_DARK'],
-    ]);
-    const poles = poleMap([['root'], ['A'], ['B'], ['A1'], ['A2'], ['B1']]);
+describe('Step 13 — Span-level localization test matrix', () => {
+  it('Known-topology span fault: pinpoints exact frontier edge', () => {
+    // root(LIVE) -> p1(LIVE) -> p2(DARK) -> p3(DARK)
+    const edges = linearEdges(['root', 'p1', 'p2', 'p3']);
+    const states = stateMap([['root', 'LIVE'], ['p1', 'LIVE'], ['p2', 'CONFIRMED_DARK'], ['p3', 'CONFIRMED_DARK']]);
+    const poles = poleMap([['root'], ['p1'], ['p2'], ['p3']]);
 
     const result = detectFrontier(edges, states, poles);
-    expect(result.frontierEdges).toHaveLength(2);
-    const pairs = result.frontierEdges.map((e) => `${e.parent_pole_id}→${e.child_pole_id}`);
-    expect(pairs).toContain('root→B');
-    expect(pairs).toContain('A→A1');
+    expect(result.frontierEdges).toHaveLength(1);
+    expect(result.frontierEdges[0].parent_pole_id).toBe('p1');
+    expect(result.frontierEdges[0].child_pole_id).toBe('p2');
+    expect(result.frontierEdges[0].source).toBe('AUTHORITATIVE');
+  });
+
+  it('Branched fault: isolates fault to specific branch', () => {
+    // root(LIVE) -> branchA(LIVE) -> a1(LIVE)
+    //           \-> branchB(LIVE) -> b1(DARK) -> b2(DARK)
+    const edges = [
+      { parent_pole_id: 'root', child_pole_id: 'branchA', source: 'AUTHORITATIVE', ambiguous: false },
+      { parent_pole_id: 'branchA', child_pole_id: 'a1', source: 'AUTHORITATIVE', ambiguous: false },
+      { parent_pole_id: 'root', child_pole_id: 'branchB', source: 'AUTHORITATIVE', ambiguous: false },
+      { parent_pole_id: 'branchB', child_pole_id: 'b1', source: 'AUTHORITATIVE', ambiguous: false },
+      { parent_pole_id: 'b1', child_pole_id: 'b2', source: 'AUTHORITATIVE', ambiguous: false },
+    ];
+    const states = stateMap([
+      ['root', 'LIVE'], ['branchA', 'LIVE'], ['a1', 'LIVE'],
+      ['branchB', 'LIVE'], ['b1', 'CONFIRMED_DARK'], ['b2', 'CONFIRMED_DARK'],
+    ]);
+    const poles = poleMap([['root'], ['branchA'], ['a1'], ['branchB'], ['b1'], ['b2']]);
+
+    const result = detectFrontier(edges, states, poles);
+    expect(result.frontierEdges).toHaveLength(1);
+    expect(result.frontierEdges[0].parent_pole_id).toBe('branchB');
+    expect(result.frontierEdges[0].child_pole_id).toBe('b1');
+  });
+
+  it('Many-downstream-poles to one-incident: 40-pole downstream fault emits exactly ONE frontier edge', () => {
+    // root (LIVE) -> p1..p40 (all CONFIRMED_DARK)
+    const poleIds = ['root'];
+    for (let i = 1; i <= 40; i++) poleIds.push(`p${i}`);
+    
+    const edges = linearEdges(poleIds);
+    const stateEntries = [['root', 'LIVE']];
+    for (let i = 1; i <= 40; i++) stateEntries.push([`p${i}`, 'CONFIRMED_DARK']);
+    
+    const poleEntries = [['root', true]];
+    for (let i = 1; i <= 40; i++) poleEntries.push([`p${i}`, true]);
+
+    const states = stateMap(stateEntries);
+    const poles = poleMap(poleEntries);
+
+    const result = detectFrontier(edges, states, poles);
+
+    expect(result.frontierEdges).toHaveLength(1);
+    expect(result.frontierEdges[0].parent_pole_id).toBe('root');
+    expect(result.frontierEdges[0].child_pole_id).toBe('p1');
     expect(result.sensorSuspects).toHaveLength(0);
   });
+
+  it('Isolated sensor anomaly: dark pole with live descendant produces no frontier and flags sensor suspect', () => {
+    // root(LIVE) -> p1(CONFIRMED_DARK) -> p2(LIVE)
+    const edges = linearEdges(['root', 'p1', 'p2']);
+    const states = stateMap([['root', 'LIVE'], ['p1', 'CONFIRMED_DARK'], ['p2', 'LIVE']]);
+    const poles = poleMap([['root'], ['p1'], ['p2']]);
+
+    const result = detectFrontier(edges, states, poles);
+    expect(result.sensorSuspects).toEqual(['p1']);
+    expect(result.frontierEdges).toHaveLength(0);
+  });
 });
+

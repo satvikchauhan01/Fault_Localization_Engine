@@ -144,8 +144,8 @@ export function detectFrontier(edges, poleStates, poleMap) {
 
   /** @type {FrontierEdge[]} */
   const frontierEdges = [];
-  /** @type {string[]} */
-  const sensorSuspects = [];
+  /** @type {Set<string>} */
+  const sensorSuspectsSet = new Set();
   /** @type {RangeEdge[]} */
   const rangeEdges = [];
 
@@ -173,7 +173,7 @@ export function detectFrontier(edges, poleStates, poleMap) {
       status === 'CONFIRMED_DARK' && subtreeHasLive(nodeId, childrenOf, poleStates);
 
     if (isSensorSuspect) {
-      sensorSuspects.push(nodeId);
+      sensorSuspectsSet.add(nodeId);
     }
 
     // ── Rule 2: Effective live-ness of this node ─────────────────────────────
@@ -201,7 +201,7 @@ export function detectFrontier(edges, poleStates, poleMap) {
         childStatus === 'CONFIRMED_DARK' && subtreeHasLive(childId, childrenOf, poleStates);
 
       if (childIsSensorSuspect) {
-        sensorSuspects.push(childId);
+        sensorSuspectsSet.add(childId);
         // Treat child as live, continue walk through it
         walk(childId, true, collapsedFrontiers);
         continue;
@@ -270,6 +270,7 @@ export function detectFrontier(edges, poleStates, poleMap) {
     walk(root, rootLive, collapsed);
   }
 
-  return { frontierEdges, sensorSuspects, rangeEdges };
+  return { frontierEdges, sensorSuspects: Array.from(sensorSuspectsSet), rangeEdges };
 }
+
 
