@@ -26,11 +26,10 @@
  * of the threshold calculation — we cannot observe their state.
  */
 
-/** Fraction of monitored poles that must be dark to trigger a rollup */
-const ROLLUP_THRESHOLD = 0.90;
-
-/** Correlation window in ms: "roughly simultaneous" = within 5 minutes */
-const CORRELATION_WINDOW_MS = 5 * 60 * 1000;
+import {
+  ROLLUP_THRESHOLD,
+  CORRELATION_WINDOW_MS,
+} from '../../../../packages/domain/src/thresholds.js';
 
 /**
  * @typedef {Object} RollupResult

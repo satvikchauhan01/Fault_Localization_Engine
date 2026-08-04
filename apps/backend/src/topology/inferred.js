@@ -17,9 +17,13 @@
  * Do not present this output to operators as a known fact.
  */
 
+import {
+  MST_MAX_DEGREE,
+  MST_AMBIGUITY_TOLERANCE,
+} from '../../../../packages/domain/src/thresholds.js';
+
 const EARTH_RADIUS_M = 6_371_000;
-const MAX_DEGREE = 4; // Max children per pole
-const AMBIGUITY_TOLERANCE = 0.15; // 15% threshold for ambiguous edges
+
 
 /**
  * Haversine distance in metres between two lat/lon points.
@@ -108,7 +112,8 @@ export function buildInferredTree(poles, dt) {
       let w2 = Infinity; // Second best weight
 
       for (const uId of visited) {
-        if (childCount.get(uId) >= MAX_DEGREE) continue;
+        if (childCount.get(uId) >= MST_MAX_DEGREE) continue;
+
 
         const u = poleById.get(uId);
         const d = haversine(u.lat, u.lon, v.lat, v.lon);
@@ -135,8 +140,8 @@ export function buildInferredTree(poles, dt) {
     }
 
     if (!bestEdge) {
-      // In a fully connected graph with geometric distance and MAX_DEGREE >= 2,
       // it is mathematically impossible to run out of capacity unless there's a bug.
+
       return {
         edges: [],
         valid: false,
@@ -144,7 +149,8 @@ export function buildInferredTree(poles, dt) {
       };
     }
 
-    const ambiguous = secondBestWeightForBestV <= bestEdge.weight * (1 + AMBIGUITY_TOLERANCE);
+    const ambiguous = secondBestWeightForBestV <= bestEdge.weight * (1 + MST_AMBIGUITY_TOLERANCE);
+
 
     edges.push({
       parent_pole_id: bestEdge.parent.id,

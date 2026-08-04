@@ -5,9 +5,12 @@
  * This module contains NO database or side-effect logic.
  */
 
-// Constants from plan
-const DEBOUNCE_MS = 90000; // ~90s
-const TIMEOUT_MS = 32 * 60 * 1000; // ~32 min
+import {
+  DEBOUNCE_MS,
+  HEARTBEAT_TIMEOUT_MS,
+  FW_LEGACY_THRESHOLD,
+} from '../../../../packages/domain/src/thresholds.js';
+
 
 /**
  * Creates a default empty state for a new pole.
@@ -96,12 +99,12 @@ export function evaluateTimeout(currentState, device, currentTime) {
 
   // Rule 4: Background heartbeat-timeout scan
   if (device && device.last_seen) {
-    if (currentTime - device.last_seen > TIMEOUT_MS && state.status !== 'CONFIRMED_DARK') {
+    if (currentTime - device.last_seen > HEARTBEAT_TIMEOUT_MS && state.status !== 'CONFIRMED_DARK') {
       state.status = 'CONFIRMED_DARK';
       state.candidate_dark_since = null;
       state.last_confirmed_at = currentTime;
       
-      if (device.fw_version >= '1.3') {
+      if (device.fw_version >= FW_LEGACY_THRESHOLD) {
         // absence of an expected power_lost plus silence is itself evidence
         state.evidence_summary = 'Missing heartbeat (fw >= 1.3)';
       } else {
