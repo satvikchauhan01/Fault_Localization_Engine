@@ -65,6 +65,10 @@
  */
 
 /**
+ * @typedef {'power_lost' | 'power_restored' | 'heartbeat_energized' | 'heartbeat_deenergized' | 'timeout_fw13' | 'timeout_fw12' | 'boot' | 'initial'} EvidenceType
+ */
+
+/**
  * @typedef {'LIVE' | 'CONFIRMED_DARK' | 'STALE' | 'OFFLINE_UNKNOWN' | 'SENSOR_SUSPECT'} PoleStatus
  */
 
@@ -75,6 +79,7 @@
  * @property {string} last_confirmed_at - ISO timestamp of last confirmed state transition
  * @property {number} last_event_seq - Sequence number of last applied telemetry event
  * @property {string} evidence_summary - Human-readable summary of state evidence
+ * @property {EvidenceType} evidence_type - Structured field denoting exact reason for state transition
  */
 
 /**

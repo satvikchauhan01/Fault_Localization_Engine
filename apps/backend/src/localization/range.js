@@ -84,26 +84,36 @@ export function expandRangeIncident(rangeEdge, childrenOf, poleStates, poleMap, 
    * Walk from a given unmonitored pole downward to find:
    * - The monitored DARK poles that form the downstream boundary
    * - All unmonitored poles in between (gap)
+   *
+   * @param {string} nodeId      The current node being visited
+   * @param {string} actualParentId  The actual parent of nodeId in the topology tree
    */
-  function walkUnmonitored(nodeId) {
+  function walkUnmonitored(nodeId, actualParentId) {
     const pole = poleMap.get(nodeId);
     const isMonitored = pole && pole.device_id !== null;
 
     if (!isMonitored) {
       unmonitoredPoleIds.push(nodeId);
-      // Check any edge going into this node for topology source / ambiguity
-      const edgeKey = `${parent_pole_id}→${nodeId}`;
+      // Look up the edge from the ACTUAL parent to this node (not the frontier parent)
+      const edgeKey = `${actualParentId}→${nodeId}`;
       const edge = edgeMap.get(edgeKey);
       if (edge) {
         if (edge.source === 'INFERRED') topologySource = 'INFERRED';
         if (edge.ambiguous) ambiguous = true;
       }
-      // Continue walking children
+      // Continue walking children, passing nodeId as their actual parent
       for (const childId of childrenOf.get(nodeId) || []) {
-        walkUnmonitored(childId);
+        walkUnmonitored(childId, nodeId);
       }
     } else {
-      // This is a monitored pole — check its state
+      // This is a monitored boundary pole — also check the incoming edge for INFERRED/ambiguous
+      const boundaryEdgeKey = `${actualParentId}→${nodeId}`;
+      const boundaryEdge = edgeMap.get(boundaryEdgeKey);
+      if (boundaryEdge) {
+        if (boundaryEdge.source === 'INFERRED') topologySource = 'INFERRED';
+        if (boundaryEdge.ambiguous) ambiguous = true;
+      }
+      // Check its state
       const state = poleStates.get(nodeId);
       const status = state ? state.status : null;
       if (status === 'CONFIRMED_DARK') {
@@ -113,9 +123,9 @@ export function expandRangeIncident(rangeEdge, childrenOf, poleStates, poleMap, 
     }
   }
 
-  // If child is unmonitored, walk from the child
+  // If child is unmonitored, walk from the child; pass parent_pole_id as child's actual parent
   if (childIsUnmonitored) {
-    walkUnmonitored(child_pole_id);
+    walkUnmonitored(child_pole_id, parent_pole_id);
   } else {
     // Child is monitored and dark — it IS the downstream boundary directly
     downstreamDarkPoleIds.push(child_pole_id);

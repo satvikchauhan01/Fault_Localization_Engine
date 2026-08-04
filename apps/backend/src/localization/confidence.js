@@ -170,7 +170,8 @@ export function evaluateConfidence(evidence) {
  * @param {object}   [rangeIncident]       The corresponding RangeIncident, if any
  * @param {string[]} [sensorSuspects]      List of SENSOR_SUSPECT pole IDs from detectFrontier()
  * @param {boolean}  [scheduledOutage]     True if a scheduled outage overlaps this incident
- * @param {Map<string, {status: string, evidence_summary: string}>} [poleStates]
+ * @param {Map<string, {status: string, evidence_type: string}>} [poleStates]
+ * @param {string[]} [affectedPoleIds]     List of all affected pole IDs in the subtree
  * @returns {ConfidenceEvidence}
  */
 export function buildConfidenceEvidence(
@@ -178,18 +179,38 @@ export function buildConfidenceEvidence(
   rangeIncident = null,
   sensorSuspects = [],
   scheduledOutage = false,
-  poleStates = new Map()
+  poleStates = new Map(),
+  affectedPoleIds = []
 ) {
   const incidentType = rangeIncident ? 'RANGE' : 'SPAN';
   const isRange = incidentType === 'RANGE';
   const rangePoleCount = rangeIncident ? rangeIncident.gap_pole_count : 0;
 
-  // Check if the boundary child pole's evidence is heartbeat-only
-  const childState = poleStates.get(frontierEdge.child_pole_id);
-  const evidenceSummary = childState ? (childState.evidence_summary || '') : '';
-  const isHeartbeatOnly = evidenceSummary.toLowerCase().includes('heartbeat') &&
-    !evidenceSummary.toLowerCase().includes('power_lost');
-  const isFw12Only = evidenceSummary.includes('fw < 1.3');
+  let isHeartbeatOnly = false;
+  let isFw12Only = false;
+
+  const polesToCheck = affectedPoleIds.length > 0 ? affectedPoleIds : [frontierEdge.child_pole_id];
+  let hasMonitored = false;
+  let allTimeouts = true;
+  let allFw12 = true;
+
+  for (const pid of polesToCheck) {
+    const state = poleStates.get(pid);
+    if (state && state.evidence_type) {
+      hasMonitored = true;
+      if (state.evidence_type !== 'timeout_fw13' && state.evidence_type !== 'timeout_fw12') {
+        allTimeouts = false;
+      }
+      if (state.evidence_type !== 'timeout_fw12') {
+        allFw12 = false;
+      }
+    }
+  }
+
+  if (hasMonitored) {
+    isHeartbeatOnly = allTimeouts;
+    isFw12Only = allFw12;
+  }
 
   return {
     incident_type: incidentType,

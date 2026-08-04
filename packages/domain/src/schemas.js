@@ -5,6 +5,17 @@ import { z } from 'zod';
  */
 export const TopologySourceEnum = z.enum(['AUTHORITATIVE', 'INFERRED']);
 
+export const EvidenceTypeEnum = z.enum([
+  'power_lost',
+  'power_restored',
+  'heartbeat_energized',
+  'heartbeat_deenergized',
+  'timeout_fw13',
+  'timeout_fw12',
+  'boot',
+  'initial',
+]);
+
 export const TelemetryEventTypeEnum = z.enum([
   'heartbeat',
   'power_lost',
@@ -96,6 +107,7 @@ export const PoleStateSchema = z.object({
   last_confirmed_at: z.string().datetime(),
   last_event_seq: z.number().int().nonnegative(),
   evidence_summary: z.string(),
+  evidence_type: EvidenceTypeEnum,
 });
 
 export const TopologyEdgeSchema = z.object({

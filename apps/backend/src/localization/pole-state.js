@@ -21,7 +21,8 @@ function createEmptyState() {
     last_confirmed_at: 0,
     last_event_seq: null,
     candidate_dark_since: null,
-    evidence_summary: 'Initial state'
+    evidence_summary: 'Initial state',
+    evidence_type: 'initial'
   };
 }
 
@@ -52,6 +53,7 @@ export function processEvent(currentState, event) {
     state.candidate_dark_since = null;
     state.last_confirmed_at = event.server_received_at;
     state.evidence_summary = event.event === 'power_restored' ? 'power_restored' : 'heartbeat (energized)';
+    state.evidence_type = event.event === 'power_restored' ? 'power_restored' : 'heartbeat_energized';
     return state;
   }
 
@@ -61,6 +63,7 @@ export function processEvent(currentState, event) {
       state.candidate_dark_since = event.server_received_at;
     }
     state.evidence_summary = event.event === 'power_lost' ? 'power_lost' : 'heartbeat (!energized)';
+    state.evidence_type = event.event === 'power_lost' ? 'power_lost' : 'heartbeat_deenergized';
     // Note: status remains unchanged (e.g. LIVE) until debounce completes
     return state;
   }
@@ -68,6 +71,7 @@ export function processEvent(currentState, event) {
   // Boot event just resets seq (handled above) and updates evidence
   if (event.event === 'boot') {
     state.evidence_summary = 'boot';
+    state.evidence_type = 'boot';
   }
 
   return state;
@@ -107,9 +111,11 @@ export function evaluateTimeout(currentState, device, currentTime) {
       if (device.fw_version >= FW_LEGACY_THRESHOLD) {
         // absence of an expected power_lost plus silence is itself evidence
         state.evidence_summary = 'Missing heartbeat (fw >= 1.3)';
+        state.evidence_type = 'timeout_fw13';
       } else {
         // only signal, by design
         state.evidence_summary = 'Missing heartbeat (fw < 1.3)';
+        state.evidence_type = 'timeout_fw12';
       }
       return state;
     }

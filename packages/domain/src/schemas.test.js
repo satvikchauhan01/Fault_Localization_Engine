@@ -99,6 +99,7 @@ describe('Domain Zod Schemas Validation', () => {
       last_confirmed_at: now,
       last_event_seq: 42,
       evidence_summary: '2 consecutive heartbeats missed',
+      evidence_type: 'timeout_fw13',
     };
     const invalid = { ...valid, status: 'BROKEN' };
 
