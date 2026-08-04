@@ -111,6 +111,17 @@ async function seed() {
   }));
   await batchInsert((args) => prisma.simTrueTopology.create(args), simTopologyRows);
 
+  console.log('[seed] Initializing PoleStates (LIVE) for monitored poles...');
+  const initialPoleStates = registry.devices.map(d => ({
+    pole_id: d.pole_id,
+    status: 'LIVE',
+    last_confirmed_at: new Date(),
+    last_event_seq: 0,
+    evidence_summary: 'Initial state',
+    evidence_type: 'initial'
+  }));
+  await batchInsert((args) => prisma.poleState.create(args), initialPoleStates);
+
   console.log('[seed] ✅ Seeding complete.');
 }
 

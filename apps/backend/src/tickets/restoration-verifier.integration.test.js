@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { prisma } from '../db.js';
 import { checkTicketRestoration, runRestorationVerifier } from './restoration-verifier.js';
 
@@ -58,6 +58,12 @@ async function setPoleState(poleId, status) {
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
 beforeEach(async () => {
+  await prisma.ticket.deleteMany();
+  await prisma.incident.deleteMany();
+  await prisma.poleState.deleteMany();
+});
+
+afterAll(async () => {
   await prisma.ticket.deleteMany();
   await prisma.incident.deleteMany();
   await prisma.poleState.deleteMany();

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { processNextTelemetryEvent } from './ingestion-worker.js';
 
@@ -61,6 +61,18 @@ describe('Ingestion Worker Integration Tests', () => {
 
   afterEach(() => {
     delete process.env.SIMULATE_CRASH;
+  });
+
+  afterAll(async () => {
+    await prisma.ticket.deleteMany();
+    await prisma.incident.deleteMany();
+    await prisma.topologyEdge.deleteMany();
+    await prisma.poleState.deleteMany();
+    await prisma.telemetryInbox.deleteMany();
+    await prisma.device.deleteMany();
+    await prisma.pole.deleteMany();
+    await prisma.transformer.deleteMany();
+    await prisma.feeder.deleteMany();
   });
 
   async function enqueue(events) {

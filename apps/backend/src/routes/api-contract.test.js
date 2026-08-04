@@ -22,7 +22,8 @@ beforeAll(async () => {
 
   const feederId = crypto.randomUUID();
   const dtId = crypto.randomUUID();
-  const poleId = crypto.randomUUID();
+  const pole1Id = crypto.randomUUID();
+  const pole2Id = crypto.randomUUID();
   const incidentId = crypto.randomUUID();
 
   await prisma.feeder.create({
@@ -33,16 +34,19 @@ beforeAll(async () => {
     data: { id: dtId, feeder_id: feederId, lat: 0, lon: 0, capacity_kva: 100, households_served: 10, topology_source: 'RECORDED' }
   });
 
-  await prisma.pole.create({
-    data: { id: poleId, feeder_id: feederId, dt_id: dtId, lat: 0, lon: 0, seq_on_line: 1 }
+  await prisma.pole.createMany({
+    data: [
+      { id: pole1Id, feeder_id: feederId, dt_id: dtId, lat: 0, lon: 0, seq_on_line: 1 },
+      { id: pole2Id, feeder_id: feederId, dt_id: dtId, lat: 0, lon: 0, seq_on_line: 2, parent_pole_id: pole1Id }
+    ]
   });
 
   await prisma.poleState.create({
-    data: { pole_id: poleId, status: 'LIVE', last_confirmed_at: new Date(), last_event_seq: 1, evidence_summary: 'Test', evidence_type: 'Test' }
+    data: { pole_id: pole1Id, status: 'LIVE', last_confirmed_at: new Date(), last_event_seq: 1, evidence_summary: 'Test', evidence_type: 'Test' }
   });
 
   await prisma.topologyEdge.create({
-    data: { parent_pole_id: poleId, child_pole_id: poleId, source: 'AUTHORITATIVE', weight: 1, ambiguous: false }
+    data: { parent_pole_id: pole1Id, child_pole_id: pole2Id, source: 'AUTHORITATIVE', weight: 1, ambiguous: false }
   });
 
   await prisma.incident.create({
@@ -60,6 +64,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
+  await prisma.ticket.deleteMany();
+  await prisma.incident.deleteMany();
+  await prisma.poleState.deleteMany();
+  await prisma.topologyEdge.deleteMany();
+  await prisma.pole.deleteMany();
+  await prisma.transformer.deleteMany();
+  await prisma.feeder.deleteMany();
 });
 
 describe('API Contract Tests (Step 26)', () => {

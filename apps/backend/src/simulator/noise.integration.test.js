@@ -3,7 +3,7 @@
  * (Duplicate resends, out-of-order delivery, firmware-1.2.x outage silence)
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { prisma } from '../db.js';
 import { buildApp } from '../app.js';
 import { applyNoiseToPayloads, isFwLegacy, isDyingMessageLost } from './noise.js';
@@ -86,6 +86,20 @@ async function drainInbox() {
 describe('Step 24 — Simulator Noise Injection', () => {
   beforeEach(async () => {
     await seedNoiseNetwork();
+  });
+
+  afterAll(async () => {
+    await prisma.telemetryInbox.deleteMany();
+    await prisma.ticket.deleteMany();
+    await prisma.incident.deleteMany();
+    await prisma.poleState.deleteMany();
+    await prisma.simulatorFault.deleteMany();
+    await prisma.simTrueTopology.deleteMany();
+    await prisma.topologyEdge.deleteMany();
+    await prisma.device.deleteMany();
+    await prisma.pole.deleteMany();
+    await prisma.transformer.deleteMany();
+    await prisma.feeder.deleteMany();
   });
 
   describe('applyNoiseToPayloads utility', () => {

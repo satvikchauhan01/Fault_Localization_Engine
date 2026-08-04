@@ -20,13 +20,16 @@
  *   pole-e  (seq=1, parent=null, device=dev-e)
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { prisma } from '../db.js';
 import { buildApp } from '../app.js';
 import { getPolesForFault, buildTelemetryPayload } from './ground-truth.js';
 import { processNextTelemetryEvent } from '../worker/ingestion-worker.js';
 import { buildAllInferredTrees } from '../topology/inferred.js';
 import crypto from 'crypto';
+import { emitHealthyHeartbeats, getAffectedPoleIds } from './heartbeat-emitter.js';
+import { evaluateTimeout } from '../localization/pole-state.js';
+import { HEARTBEAT_TIMEOUT_MS } from '../../../../packages/domain/src/thresholds.js';
 
 // ─── Seed Helpers ─────────────────────────────────────────────────────────────
 
@@ -149,6 +152,20 @@ beforeEach(async () => {
   await prisma.feeder.deleteMany();
 
   await seedNetwork();
+});
+
+afterAll(async () => {
+  await prisma.ticket.deleteMany();
+  await prisma.incident.deleteMany();
+  await prisma.poleState.deleteMany();
+  await prisma.telemetryInbox.deleteMany();
+  await prisma.simulatorFault.deleteMany();
+  await prisma.simTrueTopology.deleteMany();
+  await prisma.topologyEdge.deleteMany();
+  await prisma.device.deleteMany();
+  await prisma.pole.deleteMany();
+  await prisma.transformer.deleteMany();
+  await prisma.feeder.deleteMany();
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -522,3 +539,116 @@ describe('Missing-Topology DT: Simulator uses ground truth, production does not'
   });
 });
 
+
+// ─── Heartbeat Emitter Realism Tests ──────────────────────────────────────────
+// These tests prove the fix for the "healthy devices false-timeout" issue.
+
+describe('Heartbeat realism — Test A: healthy fw>=1.3 device stays LIVE beyond 32-min timeout', () => {
+  it('processing a heartbeat telemetry row refreshes device.last_seen so evaluateTimeout does not transition to CONFIRMED_DARK', async () => {
+    // Given: dev-root has a stale last_seen (40 min ago — past HEARTBEAT_TIMEOUT_MS).
+    const staleTime = new Date(Date.now() - (HEARTBEAT_TIMEOUT_MS + 8 * 60 * 1_000));
+    await prisma.device.update({ where: { id: 'dev-root' }, data: { last_seen: staleTime } });
+
+    // Confirm: with stale last_seen, evaluateTimeout would trigger CONFIRMED_DARK.
+    const staleDevice = await prisma.device.findUnique({ where: { id: 'dev-root' } });
+    const liveState = { status: 'LIVE', candidate_dark_since: null, last_confirmed_at: 0 };
+    const beforeResult = evaluateTimeout(
+      liveState,
+      { last_seen: staleDevice.last_seen.getTime(), fw_version: staleDevice.fw_version },
+      Date.now()
+    );
+    expect(beforeResult.status).toBe('CONFIRMED_DARK'); // without refresh this would false-timeout
+
+    // When: the ingestion worker processes a heartbeat event for this device
+    // (this is what the emitter's POST /telemetry triggers in production).
+    const now = new Date();
+    await prisma.telemetryInbox.create({
+      data: {
+        device_id: 'dev-root',
+        pole_id: 'pole-root',
+        event: 'heartbeat',
+        energized: true,
+        device_ts: now.toISOString(),
+        seq: 88888,
+        battery_mv: 3700,
+        rssi: -72,
+        fw: '1.5',
+        server_received_at: now,
+        status: 'PENDING',
+      },
+    });
+    await drainInbox(5); // worker processes heartbeat and updates device.last_seen
+
+    // Then: device.last_seen has been refreshed.
+    const freshDevice = await prisma.device.findUnique({ where: { id: 'dev-root' } });
+    expect(freshDevice.last_seen.getTime()).toBeGreaterThan(staleTime.getTime());
+
+    // And: evaluateTimeout no longer fires — the device is considered healthy.
+    const afterResult = evaluateTimeout(
+      liveState,
+      { last_seen: freshDevice.last_seen.getTime(), fw_version: freshDevice.fw_version },
+      Date.now()
+    );
+    expect(afterResult.status).toBe('LIVE');
+  });
+});
+
+describe('Heartbeat realism — Test B: fw1.2 device under active fault is skipped by emitter and follows timeout path', () => {
+  it('emitHealthyHeartbeats skips the fw1.2 device; evaluateTimeout correctly transitions it to CONFIRMED_DARK after silence', async () => {
+    // Given: add a fw1.2 device to the test network.
+    const fw12DeviceId = 'dev-fw12-test';
+    const fw12PoleId = 'pole-fw12-test';
+    await prisma.pole.upsert({
+      where: { id: fw12PoleId },
+      update: {},
+      create: { id: fw12PoleId, dt_id: DT1_ID, feeder_id: FEEDER_ID, lat: 12.975, lon: 77.593, seq_on_line: 4, parent_pole_id: 'pole-b', device_id: fw12DeviceId },
+    });
+    await prisma.device.upsert({
+      where: { id: fw12DeviceId },
+      update: {},
+      create: { id: fw12DeviceId, pole_id: fw12PoleId, fw_version: '1.2.4', first_seen: new Date(), last_seen: new Date() },
+    });
+    await prisma.simTrueTopology.upsert({
+      where: { pole_id: fw12PoleId },
+      update: {},
+      create: { pole_id: fw12PoleId, parent_pole_id: 'pole-b' },
+    });
+
+    // Create an active SimulatorFault covering this pole's area.
+    const faultId = 'fault-fw12-test';
+    await prisma.simulatorFault.create({
+      data: { id: faultId, type: 'SPAN', target: 'pole-b', repaired_at: null },
+    });
+
+    // When: emitHealthyHeartbeats runs (using a bad URL so no real HTTP calls succeed).
+    // We only care about the skip counts, not actual emission success.
+    const result = await emitHealthyHeartbeats('http://127.0.0.1:1', prisma);
+
+    // Then: the fw1.2 device is counted in skippedLegacy (fw<1.3 always skipped).
+    // fw>=1.3 devices under the fault go to skippedFault.
+    expect(result.skippedLegacy).toBeGreaterThanOrEqual(1);
+    // The fw1.2 device itself was NOT emitted to (correct — it never heartbeats).
+
+    // And: after HEARTBEAT_TIMEOUT_MS of silence, evaluateTimeout fires for the fw1.2 device.
+    const staleTime = new Date(Date.now() - (HEARTBEAT_TIMEOUT_MS + 5 * 60 * 1_000));
+    await prisma.device.update({ where: { id: fw12DeviceId }, data: { last_seen: staleTime } });
+
+    const agedDevice = await prisma.device.findUnique({ where: { id: fw12DeviceId } });
+    const state = { status: 'LIVE', candidate_dark_since: null, last_confirmed_at: 0 };
+    const timeoutResult = evaluateTimeout(
+      state,
+      { last_seen: agedDevice.last_seen.getTime(), fw_version: agedDevice.fw_version },
+      Date.now()
+    );
+
+    // The fw1.2 device correctly follows the timeout path (evidence_type = 'timeout_fw12').
+    expect(timeoutResult.status).toBe('CONFIRMED_DARK');
+    expect(timeoutResult.evidence_type).toBe('timeout_fw12');
+
+    // Cleanup
+    await prisma.simulatorFault.delete({ where: { id: faultId } });
+    await prisma.simTrueTopology.delete({ where: { pole_id: fw12PoleId } });
+    await prisma.device.delete({ where: { id: fw12DeviceId } });
+    await prisma.pole.delete({ where: { id: fw12PoleId } });
+  });
+});

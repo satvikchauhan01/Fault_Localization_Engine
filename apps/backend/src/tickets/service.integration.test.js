@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { prisma } from '../db.js';
 import { getTicket, listTickets, transitionTicket } from './service.js';
 import { buildApp } from '../app.js';
@@ -36,6 +36,11 @@ describe('Ticket Service & API Integration', () => {
       }
     });
     testTicketId = ticket.id;
+  });
+
+  afterAll(async () => {
+    await prisma.ticket.deleteMany();
+    await prisma.incident.deleteMany();
   });
 
   describe('Service Logic', () => {

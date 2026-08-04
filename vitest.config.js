@@ -8,6 +8,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     test: {
+      globalSetup: path.resolve(__dirname, 'vitest.global-setup.js'),
       globals: true,
       environment: 'node',
       fileParallelism: false,

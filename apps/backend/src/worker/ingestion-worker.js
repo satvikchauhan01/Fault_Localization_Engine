@@ -95,6 +95,21 @@ export async function processNextTelemetryEvent() {
         }
       }
 
+      // Always update device.last_seen to the event's server_received_at.
+      // This is correct regardless of whether PoleState changed: if a device
+      // sent any telemetry (heartbeat, power_lost, power_restored, boot), it
+      // was demonstrably alive at that moment. The sweeper's heartbeat-timeout
+      // scan (Section H Rule 4) reads device.last_seen to detect silence, so
+      // keeping it current prevents healthy devices from triggering false timeouts.
+      // This does NOT apply fw-1.2.x special treatment: fw<1.3 devices will
+      // still time out because they stop sending telemetry after a fault (the
+      // simulator never emits healthy heartbeats for them), so last_seen
+      // naturally stops refreshing for them once their telemetry stops.
+      await tx.device.updateMany({
+        where: { pole_id: eventRecord.pole_id },
+        data: { last_seen: eventRecord.server_received_at },
+      });
+
       // Testing hook for crash recovery simulation
       if (process.env.SIMULATE_CRASH === '1') {
         throw new Error('Simulated Crash Mid-Transaction');

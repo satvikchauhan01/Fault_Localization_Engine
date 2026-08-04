@@ -33,5 +33,17 @@ echo "[entrypoint] Running seed script..."
 node src/scripts/seed.js
 echo "[entrypoint] ✅ Seed complete."
 
-echo "[entrypoint] Starting backend server..."
-exec node src/index.js
+echo "[entrypoint] Building runtime topology..."
+node src/scripts/build-topology.js
+echo "[entrypoint] ✅ Topology ready."
+
+if [ "$1" = "worker" ]; then
+  echo "[entrypoint] Starting ingestion worker..."
+  exec node src/worker/run.js
+elif [ -n "$1" ]; then
+  echo "[entrypoint] Executing custom command..."
+  exec "$@"
+else
+  echo "[entrypoint] Starting backend server..."
+  exec node src/index.js
+fi
