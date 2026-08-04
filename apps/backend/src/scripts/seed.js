@@ -65,6 +65,7 @@ async function seed() {
     await prisma.topologyEdge.deleteMany();
     await prisma.scheduledOutage.deleteMany();
     await prisma.simulatorFault.deleteMany();
+    await prisma.simTrueTopology.deleteMany();
     await prisma.device.deleteMany();
     await prisma.pole.deleteMany();
     await prisma.transformer.deleteMany();
@@ -102,6 +103,13 @@ async function seed() {
 
   console.log('[seed] Inserting Devices...');
   await batchInsert((args) => prisma.device.create(args), registry.devices);
+
+  console.log('[seed] Inserting Simulator True Topology...');
+  const simTopologyRows = groundTruth.poles.map(p => ({
+    pole_id: p.id,
+    parent_pole_id: p.parent_pole_id
+  }));
+  await batchInsert((args) => prisma.simTrueTopology.create(args), simTopologyRows);
 
   console.log('[seed] ✅ Seeding complete.');
 }

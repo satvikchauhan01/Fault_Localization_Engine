@@ -9,6 +9,7 @@ import { prisma as defaultPrisma } from './db.js';
 import { telemetryRoutes } from './routes/telemetry.js';
 import { scheduledOutageRoutes } from './routes/scheduled-outages.js';
 import ticketRoutes from './routes/tickets.js';
+import simulatorRoutes from './routes/simulator.js';
 
 /**
  * Builds and configures Fastify server instance.
@@ -38,6 +39,9 @@ export function buildApp(opts = {}) {
 
   // Ticket routes
   app.register(ticketRoutes, { prefix: '/api/tickets' });
+
+  // Simulator fault injection routes (demo/testing only)
+  app.register(simulatorRoutes, { prefix: '/api/simulator' });
 
   return app;
 }

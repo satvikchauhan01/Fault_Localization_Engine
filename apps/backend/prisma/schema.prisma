@@ -225,3 +225,14 @@ model SimulatorFault {
 
   @@map("simulator_faults")
 }
+
+// Simulator-only ground truth store.
+// Used to preserve the physical parent-child relationships for poles in
+// MISSING-topology DTs, because the export-registry step strips parent_pole_id
+// from the main Pole table. The production localization engine cannot see this table.
+model SimTrueTopology {
+  pole_id        String  @id
+  parent_pole_id String? @map("parent_pole_id")
+
+  @@map("sim_true_topology")
+}
