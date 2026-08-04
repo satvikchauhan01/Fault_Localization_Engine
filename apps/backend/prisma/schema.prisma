@@ -146,11 +146,13 @@ model TelemetryInbox {
 }
 
 model PoleState {
-  pole_id           String     @id @map("pole_id")
-  status            PoleStatus
-  last_confirmed_at DateTime   @map("last_confirmed_at")
-  last_event_seq    Int        @map("last_event_seq")
-  evidence_summary  String     @map("evidence_summary")
+  pole_id              String     @id @map("pole_id")
+  status               PoleStatus
+  last_confirmed_at    DateTime   @map("last_confirmed_at")
+  last_event_seq       Int        @map("last_event_seq")
+  evidence_summary     String     @map("evidence_summary")
+  candidate_dark_since DateTime?  @map("candidate_dark_since")
+  evidence_type        String     @map("evidence_type")
 
   @@map("pole_states")
 }
@@ -183,9 +185,10 @@ model Incident {
   id                       String             @id
   type                     IncidentType
   upstream_live_pole_id    String?            @map("upstream_live_pole_id")
-  downstream_dark_pole_ids Json               @map("downstream_dark_pole_ids")
-  affected_pole_ids        Json               @map("affected_pole_ids")
-  affected_count           Int                @map("affected_count")
+  downstream_dark_pole_ids     Json               @map("downstream_dark_pole_ids")
+  affected_pole_ids            Json               @map("affected_pole_ids")
+  historical_affected_pole_ids Json               @map("historical_affected_pole_ids")
+  affected_count               Int                @map("affected_count")
   // Dominant edge source used to localize this incident (AUTHORITATIVE or INFERRED)
   topology_source          EdgeTopologySource @map("topology_source")
   confidence               ConfidenceLevel

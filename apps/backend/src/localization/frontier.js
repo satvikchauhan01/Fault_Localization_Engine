@@ -47,7 +47,7 @@
  * @param {object[]} edges  TopologyEdge[]
  * @returns {{ childrenOf: Map<string,string[]>, roots: Set<string> }}
  */
-function buildAdjacency(edges) {
+export function buildAdjacency(edges) {
   const childrenOf = new Map();
   const childSet = new Set(edges.map((e) => e.child_pole_id));
   const parentSet = new Set(edges.map((e) => e.parent_pole_id));
