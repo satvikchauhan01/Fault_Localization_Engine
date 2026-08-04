@@ -10,6 +10,8 @@ import { telemetryRoutes } from './routes/telemetry.js';
 import { scheduledOutageRoutes } from './routes/scheduled-outages.js';
 import ticketRoutes from './routes/tickets.js';
 import simulatorRoutes from './routes/simulator.js';
+import incidentRoutes from './routes/incidents.js';
+import mapRoutes from './routes/map.js';
 
 /**
  * Builds and configures Fastify server instance.
@@ -42,6 +44,12 @@ export function buildApp(opts = {}) {
 
   // Simulator fault injection routes (demo/testing only)
   app.register(simulatorRoutes, { prefix: '/api/simulator' });
+
+  // Incident routes
+  app.register(incidentRoutes, { prefix: '/api/incidents' });
+
+  // Map routes
+  app.register(mapRoutes, { prefix: '/api/map' });
 
   return app;
 }

@@ -21,10 +21,17 @@ export default async function simulatorRoutes(fastify, opts) {
 
   /**
    * POST /api/simulator/inject
-   * Body: { type: 'SPAN'|'DT'|'FEEDER', target: string }
+   * Body: { type: 'SPAN'|'DT'|'FEEDER', target: string, duplicates?: boolean, reorder?: boolean }
    */
   fastify.post('/inject', async (request, reply) => {
-    const { type, target } = request.body ?? {};
+    const {
+      type,
+      target,
+      duplicates,
+      duplicateResends,
+      reorder,
+      delayedDelivery,
+    } = request.body ?? {};
 
     if (!type || !VALID_FAULT_TYPES.includes(type)) {
       return reply.status(400).send({
@@ -36,7 +43,11 @@ export default async function simulatorRoutes(fastify, opts) {
     }
 
     try {
-      const result = await injectFault(type, target, telemetryBaseUrl, db);
+      const options = {
+        duplicates: Boolean(duplicates || duplicateResends),
+        reorder: Boolean(reorder || delayedDelivery),
+      };
+      const result = await injectFault(type, target, telemetryBaseUrl, db, options);
       return reply.status(202).send(result);
     } catch (err) {
       if (err.message.includes('not found')) {

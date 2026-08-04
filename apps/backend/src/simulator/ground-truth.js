@@ -23,6 +23,7 @@
 
 import { prisma as defaultPrisma } from '../db.js';
 import { randomUUID } from 'crypto';
+import { applyNoiseToPayloads, isFwLegacy, isDyingMessageLost } from './noise.js';
 
 /**
  * Returns the set of poles whose physical power is interrupted by the given fault.
@@ -132,17 +133,29 @@ export function buildTelemetryPayload(pole, device, event, seq) {
 /**
  * Injects a simulated fault by:
  *   1. Computing affected poles from ground-truth physical topology.
- *   2. Sending `power_lost` telemetry for each monitored pole (has a device).
- *   3. Recording the fault in SimulatorFault.
+ *   2. Sending `power_lost` telemetry for each monitored pole (has a device),
+ *      skipping devices with firmware < 1.3 (fw-1.2.x silence).
+ *   3. Applying noise transformations (duplicate resends, out-of-order delivery) if requested.
+ *   4. Recording the fault in SimulatorFault.
  *
  * @param {'SPAN'|'DT'|'FEEDER'} faultType
  * @param {string} targetId
  * @param {string} telemetryBaseUrl  Base URL of the backend (e.g. "http://localhost:3000")
- * @param {import('@prisma/client').PrismaClient} [prismaClient]
+ * @param {import('@prisma/client').PrismaClient|object} [prismaClient] Prisma client instance or options
+ * @param {object} [options] Noise injection options ({ duplicates, reorder })
  * @returns {Promise<{ faultId: string; affectedPoles: string[]; telemetrySent: number }>}
  */
-export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaClient) {
-  const db = prismaClient || defaultPrisma;
+export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaClient, options = {}) {
+  let db = prismaClient;
+  let opts = options;
+
+  // Handle flexible signature where prismaClient is omitted or passed as options
+  if (prismaClient && typeof prismaClient === 'object' && !prismaClient.pole && !prismaClient.$transaction) {
+    opts = prismaClient;
+    db = defaultPrisma;
+  }
+  db = db || defaultPrisma;
+  opts = opts || {};
 
   const affectedPoles = await getPolesForFault(faultType, targetId, db);
 
@@ -153,8 +166,8 @@ export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaC
   });
   const deviceByPoleId = new Map(devices.map(d => [d.pole_id, d]));
 
-  let telemetrySent = 0;
   const seqBase = Date.now() % 2_000_000_000; // keep well within int32 range
+  const basePayloads = [];
 
   for (let i = 0; i < affectedPoles.length; i++) {
     const pole = affectedPoles[i];
@@ -165,8 +178,26 @@ export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaC
       continue;
     }
 
-    const payload = buildTelemetryPayload(pole, device, 'power_lost', seqBase + i);
+    // Firmware-1.2.x silence: devices with firmware < 1.3 do not emit dying power_lost messages
+    if (isFwLegacy(device.fw_version)) {
+      // Silent on outage (stops heartbeating only)
+      continue;
+    }
 
+    // ~30% missing dying message (capacitor failure) on fw >= 1.3 if missingDyingMessage option is set or enabled
+    if (opts.missingDyingMessage && isDyingMessageLost(device.id)) {
+      continue;
+    }
+
+    const payload = buildTelemetryPayload(pole, device, 'power_lost', seqBase + i);
+    basePayloads.push(payload);
+  }
+
+  // Apply noise transformations (duplicate resends, reordering)
+  const finalPayloads = applyNoiseToPayloads(basePayloads, opts);
+
+  let telemetrySent = 0;
+  for (const payload of finalPayloads) {
     const resp = await fetch(`${telemetryBaseUrl}/telemetry`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -174,7 +205,7 @@ export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaC
     });
 
     if (!resp.ok) {
-      throw new Error(`Telemetry POST failed for pole ${pole.id}: ${resp.status} ${await resp.text()}`);
+      throw new Error(`Telemetry POST failed for pole ${payload.pole_id}: ${resp.status} ${await resp.text()}`);
     }
     telemetrySent++;
   }

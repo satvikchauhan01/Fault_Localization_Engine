@@ -114,6 +114,9 @@ export async function runLocalizationForDt(dtId, tx) {
       const conf = evaluateConfidence(evidence);
       finalIncidents.push({
         ...inc,
+        type: inc.type === 'DT_FAULT' ? 'DT' : inc.type === 'FEEDER_FAULT' ? 'FEEDER' : inc.type,
+        downstream_dark_pole_ids: inc.downstream_dark_pole_ids || inc.affected_pole_ids || [],
+        affected_count: inc.affected_count || (inc.affected_pole_ids ? inc.affected_pole_ids.length : 0),
         confidence: conf.level,
         confidence_reasons: conf.reasons,
         scheduled_outage_overlap: evidence.scheduled_outage_overlap,
