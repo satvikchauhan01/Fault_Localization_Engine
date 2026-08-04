@@ -322,3 +322,84 @@ describe('Correlation Window Enforcement (5-minute window)', () => {
   });
 });
 
+// ─── Step 15: DT and Feeder Rollup Test Matrix ───────────────────────────────
+
+describe('Step 15 — DT/feeder rollup test matrix', () => {
+  it('DT fault: fully-dark DT produces exactly 1 DT incident', () => {
+    const poleIds = makePoles(10, 'dt1_p');
+    const dtPoleMap = new Map([['dt-1', poleIds]]);
+    const states = stateMap(poleIds.map((id) => [id, 'CONFIRMED_DARK']));
+    const poles = poleMap(poleIds.map((id) => [id, true]));
+
+    const { dtRollups } = evaluateFeederRollup('feeder-1', ['dt-1'], dtPoleMap, states, poles);
+    const frontierEdges = [{ parent_pole_id: 'root', child_pole_id: 'dt1_p1', source: 'AUTHORITATIVE', ambiguous: false }];
+    const poleIdToDtId = new Map(poleIds.map((id) => [id, 'dt-1']));
+
+    const { incidents } = applyRollup(frontierEdges, dtRollups, null, poleIdToDtId);
+
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0].type).toBe('DT_FAULT');
+    expect(incidents[0].target_id).toBe('dt-1');
+  });
+
+  it('Feeder fault: fully-dark feeder produces exactly 1 feeder incident', () => {
+    const dt1Poles = makePoles(5, 'dt1_p');
+    const dt2Poles = makePoles(5, 'dt2_p');
+    const dtPoleMap = new Map([['dt-1', dt1Poles], ['dt-2', dt2Poles]]);
+    const allPoles = [...dt1Poles, ...dt2Poles];
+
+    const states = stateMap(allPoles.map((id) => [id, 'CONFIRMED_DARK']));
+    const poles = poleMap(allPoles.map((id) => [id, true]));
+
+    const { feederRollup, dtRollups } = evaluateFeederRollup('feeder-1', ['dt-1', 'dt-2'], dtPoleMap, states, poles);
+    const frontierEdges = [
+      { parent_pole_id: 'root1', child_pole_id: 'dt1_p1', source: 'AUTHORITATIVE', ambiguous: false },
+      { parent_pole_id: 'root2', child_pole_id: 'dt2_p1', source: 'AUTHORITATIVE', ambiguous: false },
+    ];
+    const poleIdToDtId = new Map([
+      ...dt1Poles.map((id) => [id, 'dt-1']),
+      ...dt2Poles.map((id) => [id, 'dt-2']),
+    ]);
+
+    const { incidents, nestedDtIncidents } = applyRollup(frontierEdges, dtRollups, feederRollup, poleIdToDtId);
+
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0].type).toBe('FEEDER_FAULT');
+    expect(incidents[0].target_id).toBe('feeder-1');
+    expect(nestedDtIncidents).toHaveLength(2);
+  });
+
+  it('Multiple simultaneous independent faults: 2 unrelated concurrent span faults produce exactly 2 independent incidents', () => {
+    // 2 separate DTs, each with 10 poles, but only 1 pole dark in each (10% dark -> no rollup)
+    const dt1Poles = makePoles(10, 'dt1_p');
+    const dt2Poles = makePoles(10, 'dt2_p');
+    const dtPoleMap = new Map([['dt-1', dt1Poles], ['dt-2', dt2Poles]]);
+
+    const states = stateMap([
+      ['dt1_p1', 'CONFIRMED_DARK'],
+      ['dt2_p1', 'CONFIRMED_DARK'],
+      ...dt1Poles.slice(1).map((id) => [id, 'LIVE']),
+      ...dt2Poles.slice(1).map((id) => [id, 'LIVE']),
+    ]);
+    const poles = poleMap([...dt1Poles, ...dt2Poles].map((id) => [id, true]));
+
+    const { feederRollup, dtRollups } = evaluateFeederRollup('feeder-1', ['dt-1', 'dt-2'], dtPoleMap, states, poles);
+    const frontierEdges = [
+      { parent_pole_id: 'root1', child_pole_id: 'dt1_p1', source: 'AUTHORITATIVE', ambiguous: false },
+      { parent_pole_id: 'root2', child_pole_id: 'dt2_p1', source: 'AUTHORITATIVE', ambiguous: false },
+    ];
+    const poleIdToDtId = new Map([
+      ...dt1Poles.map((id) => [id, 'dt-1']),
+      ...dt2Poles.map((id) => [id, 'dt-2']),
+    ]);
+
+    const { incidents, suppressedFrontierEdges } = applyRollup(frontierEdges, dtRollups, feederRollup, poleIdToDtId);
+
+    expect(incidents).toHaveLength(2);
+    expect(suppressedFrontierEdges).toHaveLength(0);
+    expect(incidents[0]).toBe(frontierEdges[0]);
+    expect(incidents[1]).toBe(frontierEdges[1]);
+  });
+});
+
+
