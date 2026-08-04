@@ -1,28 +1,28 @@
 /**
- * @file index.js — Backend application entrypoint (placeholder until Step 18)
+ * @file index.js — Backend application entrypoint
  *
- * Exposes a minimal HTTP server with:
- *   GET /health  — liveness probe used by Docker Compose healthcheck
- *
- * This will be replaced by the full Fastify server in Step 18.
+ * Fastify server exposing:
+ *   GET  /health     — Liveness probe
+ *   POST /telemetry  — Ingestion endpoint (Step 18)
  */
 
-import { createServer } from 'http';
+import { buildApp } from './app.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-const server = createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'kspdb-backend' }));
-    return;
-  }
-  res.writeHead(404);
-  res.end('Not found');
-});
+const app = buildApp();
 
-server.listen(PORT, HOST, () => {
-  console.log(`[backend] Server listening on http://${HOST}:${PORT}`);
-  console.log(`[backend] Health: http://${HOST}:${PORT}/health`);
-});
+async function start() {
+  try {
+    await app.listen({ port: PORT, host: HOST });
+    console.log(`[backend] Fastify server listening on http://${HOST}:${PORT}`);
+    console.log(`[backend] Health: http://${HOST}:${PORT}/health`);
+    console.log(`[backend] Telemetry endpoint: http://${HOST}:${PORT}/telemetry`);
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
+}
+
+start();

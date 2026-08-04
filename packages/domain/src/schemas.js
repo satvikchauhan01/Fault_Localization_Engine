@@ -101,6 +101,19 @@ export const TelemetryEventSchema = z.object({
   server_received_at: z.string().datetime(),
 });
 
+export const TelemetryIngestSchema = z.object({
+  device_id: z.string().min(1),
+  pole_id: z.string().min(1),
+  event: TelemetryEventTypeEnum,
+  energized: z.boolean(),
+  device_ts: z.string().datetime(),
+  seq: z.number().int().nonnegative(),
+  battery_mv: z.number().optional(),
+  rssi: z.number().optional(),
+  fw: z.string().min(1),
+  server_received_at: z.string().datetime().optional(),
+});
+
 export const PoleStateSchema = z.object({
   pole_id: z.string().min(1),
   status: PoleStatusEnum,

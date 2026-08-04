@@ -5,6 +5,7 @@ import {
   TransformerSchema,
   FeederSchema,
   TelemetryEventSchema,
+  TelemetryIngestSchema,
   PoleStateSchema,
   TopologyEdgeSchema,
   ScheduledOutageSchema,
@@ -90,6 +91,21 @@ describe('Domain Zod Schemas Validation', () => {
 
     expect(TelemetryEventSchema.safeParse(valid).success).toBe(true);
     expect(TelemetryEventSchema.safeParse(invalid).success).toBe(false);
+  });
+
+  it('validates TelemetryIngestSchema correctly (server_received_at optional)', () => {
+    const validNoServerTs = {
+      device_id: 'dev-1',
+      pole_id: 'pole-101',
+      event: 'power_lost',
+      energized: false,
+      device_ts: now,
+      seq: 42,
+      battery_mv: 3300,
+      rssi: -75,
+      fw: '1.3.0',
+    };
+    expect(TelemetryIngestSchema.safeParse(validNoServerTs).success).toBe(true);
   });
 
   it('validates PoleStateSchema correctly', () => {
