@@ -1,10 +1,10 @@
-﻿# KSPDB Fault Localization Engine - Render Blueprint
+# KSPDB Fault Localization Engine - Render Blueprint
 
 databases:
   - name: kspdb-db
     plan: free
-    databaseName: kspdb_fault_localization
-    user: postgres
+
+
 
 services:
   # 1. Backend (Node.js API)
