@@ -75,12 +75,12 @@ services:
     restart: unless-stopped
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/kspdb_fault_localization?schema=public
       NODE_ENV: production
       TELEMETRY_BASE_URL: http://backend:3000
-      HEARTBEAT_EMITTER_STARTUP: "0"
+      HEARTBEAT_EMITTER_STARTUP: "1"
       # Optional: set to enable AI incident explanations
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     command: ["worker"]
@@ -93,6 +93,8 @@ services:
     depends_on:
       backend:
         condition: service_started
+    environment:
+      BACKEND_URL: http://backend:3000
     ports:
       - "80:80"
     healthcheck:
