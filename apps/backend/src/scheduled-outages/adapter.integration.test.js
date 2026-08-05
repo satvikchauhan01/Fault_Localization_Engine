@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { processNextTelemetryEvent } from '../worker/ingestion-worker.js';
 import { fetchAndCacheScheduledOutages, checkScheduledOutageOverlap } from './adapter.js';

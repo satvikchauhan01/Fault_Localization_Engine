@@ -139,11 +139,29 @@ export function expandRangeIncident(rangeEdge, childrenOf, poleStates, poleMap, 
   // Total poles in the gap = unmonitored (gap poles) + the monitored dark endpoints
   const gapPoleCount = unmonitoredPoleIds.length + downstreamDarkPoleIds.length;
 
+  // Build affected_pole_ids: unmonitored gap + downstream dark boundaries + all their descendants
+  const affectedPoleIds = [...unmonitoredPoleIds];
+  const queue = [...downstreamDarkPoleIds];
+  const visited = new Set(unmonitoredPoleIds);
+
+  while (queue.length > 0) {
+    const curr = queue.shift();
+    if (!visited.has(curr)) {
+      visited.add(curr);
+      affectedPoleIds.push(curr);
+      for (const child of childrenOf.get(curr) || []) {
+        queue.push(child);
+      }
+    }
+  }
+
   return {
     type: 'RANGE',
     upstream_live_pole_id: upstreamLivePoleId,
     downstream_dark_pole_ids: downstreamDarkPoleIds,
     unmonitored_pole_ids: unmonitoredPoleIds,
+    affected_pole_ids: affectedPoleIds,
+    affected_count: affectedPoleIds.length,
     gap_pole_count: gapPoleCount,
     low_confidence_by_size: gapPoleCount > RANGE_LOW_CONFIDENCE_POLE_CUTOFF,
     topology_source: topologySource,

@@ -6,20 +6,21 @@ import { processNextTelemetryEvent } from './ingestion-worker.js';
 import { sweepTimeouts } from './sweeper.js';
 import { startHeartbeatEmitter } from '../simulator/heartbeat-emitter.js';
 
-const POLL_INTERVAL_MS = 1000;
-const IDLE_POLL_INTERVAL_MS = 5000;
-const SWEEP_INTERVAL_MS = 10000;
+import { fileURLToPath } from 'url';
+import { runRestorationVerifier } from '../tickets/restoration-verifier.js';
+
+const POLL_INTERVAL_MS = 10;
+const IDLE_POLL_INTERVAL_MS = 1000;
+const SWEEP_INTERVAL_MS = 5000;
+const VERIFIER_INTERVAL_MS = 15000;
 
 let isShuttingDown = false;
+let loopTimeoutId = null;
+let sweeperIntervalId = null;
+let verifierIntervalId = null;
+let heartbeatTimers = null;
 
-console.log('[Worker] Starting background ingestion worker process...');
-
-// Start simulator heartbeat emitter. This keeps seeded fw>=1.3 devices from
-// false-timing-out while the demo is running (Section H Rule 4 / Section J Step 3).
-// It is intentionally wired here (same process as the worker) to avoid adding
-// a new Docker service. TELEMETRY_BASE_URL can be overridden in tests.
-const telemetryBaseUrl = process.env.TELEMETRY_BASE_URL || 'http://localhost:3000';
-startHeartbeatEmitter(telemetryBaseUrl);
+console.log('[Worker] Worker module loaded.');
 
 async function loop() {
   if (isShuttingDown) {
@@ -29,33 +30,76 @@ async function loop() {
 
   try {
     const processed = await processNextTelemetryEvent();
-    
-    // If we processed something, check again quickly (throttle slightly to not spin).
-    // If queue is empty, sleep longer to reduce DB load.
-    setTimeout(loop, processed ? 100 : IDLE_POLL_INTERVAL_MS);
+    loopTimeoutId = setTimeout(loop, processed ? POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
   } catch (err) {
     console.error('[Worker] Fatal error in processing loop:', err);
-    // Sleep a bit before retrying on error to avoid tight error loops
-    setTimeout(loop, IDLE_POLL_INTERVAL_MS);
+    loopTimeoutId = setTimeout(loop, IDLE_POLL_INTERVAL_MS);
   }
 }
 
-// Start sweeping loop
-setInterval(() => {
-  if (!isShuttingDown) {
-    sweepTimeouts().catch(err => console.error('[Worker] Sweeper error:', err));
+export function startWorker() {
+  if (!isShuttingDown && (sweeperIntervalId || verifierIntervalId || loopTimeoutId)) {
+    console.log('[Worker] Worker already started.');
+    return;
   }
-}, SWEEP_INTERVAL_MS);
+  if (isShuttingDown) isShuttingDown = false;
+  console.log('[Worker] Starting background ingestion worker process...');
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('[Worker] Received SIGINT. Shutting down gracefully...');
-  isShuttingDown = true;
-});
-process.on('SIGTERM', () => {
-  console.log('[Worker] Received SIGTERM. Shutting down gracefully...');
-  isShuttingDown = true;
-});
+  const telemetryBaseUrl = process.env.TELEMETRY_BASE_URL || 'http://localhost:3000';
+  heartbeatTimers = startHeartbeatEmitter(telemetryBaseUrl, {
+    startup: process.env.HEARTBEAT_EMITTER_STARTUP !== '0',
+  });
 
-// Start loop
-loop();
+  sweeperIntervalId = setInterval(() => {
+    if (!isShuttingDown) {
+      sweepTimeouts().catch(err => console.error('[Worker] Sweeper error:', err));
+    }
+  }, SWEEP_INTERVAL_MS);
+
+  verifierIntervalId = setInterval(() => {
+    if (!isShuttingDown) {
+      runRestorationVerifier().catch(err => console.error('[Worker] Verifier error:', err));
+    }
+  }, VERIFIER_INTERVAL_MS);
+
+  loop();
+}
+
+export function stopWorker() {
+  console.log('[Worker] Shutting down gracefully...');
+  isShuttingDown = true;
+  
+  if (loopTimeoutId) {
+    clearTimeout(loopTimeoutId);
+    loopTimeoutId = null;
+  }
+  if (sweeperIntervalId) {
+    clearInterval(sweeperIntervalId);
+    sweeperIntervalId = null;
+  }
+  if (verifierIntervalId) {
+    clearInterval(verifierIntervalId);
+    verifierIntervalId = null;
+  }
+  
+  if (heartbeatTimers) {
+    if (heartbeatTimers.interval) clearInterval(heartbeatTimers.interval);
+    if (heartbeatTimers.startupTimer) clearTimeout(heartbeatTimers.startupTimer);
+    heartbeatTimers = null;
+  }
+}
+
+// Automatically start if run as the main entrypoint
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  startWorker();
+  
+  process.on('SIGINT', () => {
+    console.log('[Worker] Received SIGINT.');
+    stopWorker();
+  });
+  
+  process.on('SIGTERM', () => {
+    console.log('[Worker] Received SIGTERM.');
+    stopWorker();
+  });
+}

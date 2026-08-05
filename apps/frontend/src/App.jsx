@@ -5,7 +5,7 @@ import IncidentDetail from './components/IncidentDetail';
 import SimulatorPanel from './pages/SimulatorPanel';
 import { useIncidents } from './hooks/useIncidents';
 import { useMapData } from './hooks/useMapData';
-import { Activity, Shield, Map, Settings, Bell, TestTube, Zap } from 'lucide-react';
+import { Activity, Map, Settings, Bell, TestTube, Zap } from 'lucide-react';
 
 export default function App() {
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);

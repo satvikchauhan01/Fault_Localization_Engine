@@ -51,8 +51,13 @@ export function buildAdjacency(edges) {
   const childrenOf = new Map();
   const childSet = new Set(edges.map((e) => e.child_pole_id));
   const parentSet = new Set(edges.map((e) => e.parent_pole_id));
+  const seenEdges = new Set();
 
   for (const e of edges) {
+    const edgeKey = `${e.parent_pole_id}->${e.child_pole_id}`;
+    if (seenEdges.has(edgeKey)) continue;
+    seenEdges.add(edgeKey);
+
     if (!childrenOf.has(e.parent_pole_id)) childrenOf.set(e.parent_pole_id, []);
     childrenOf.get(e.parent_pole_id).push(e.child_pole_id);
   }
@@ -102,19 +107,26 @@ function subtreeHasDark(nodeId, childrenOf, poleStates, stopAt) {
 
 /**
  * Determines whether a subtree rooted at `nodeId` contains at least one
- * LIVE pole.
+ * LIVE pole that contradicts a dark node (i.e. was seen live AFTER the dark node went dark).
  *
  * @param {string}                      nodeId
  * @param {Map<string,string[]>}        childrenOf
- * @param {Map<string,{status:string}>} poleStates
+ * @param {Map<string,{status:string, last_confirmed_at:number}>} poleStates
+ * @param {number}                      darkNodeTimestamp
  * @returns {boolean}
  */
-function subtreeHasLive(nodeId, childrenOf, poleStates) {
+function subtreeHasLive(nodeId, childrenOf, poleStates, darkNodeTimestamp = 0) {
   const state = poleStates.get(nodeId);
-  if (state && state.status === 'LIVE') return true;
+  if (state && state.status === 'LIVE') {
+    // Only consider it contradictory if the LIVE signal is as new or newer than the dark signal.
+    // (Using a 1000ms grace period for clock skew/event ordering)
+    if ((state.last_confirmed_at || 0) >= darkNodeTimestamp - 1000) {
+      return true;
+    }
+  }
 
   for (const child of childrenOf.get(nodeId) || []) {
-    if (subtreeHasLive(child, childrenOf, poleStates)) return true;
+    if (subtreeHasLive(child, childrenOf, poleStates, darkNodeTimestamp)) return true;
   }
   return false;
 }
@@ -170,7 +182,7 @@ export function detectFrontier(edges, poleStates, poleMap) {
     // We must detect this BEFORE deciding to emit a frontier edge into this node.
     // Note: this only applies when the node itself is CONFIRMED_DARK.
     const isSensorSuspect =
-      status === 'CONFIRMED_DARK' && subtreeHasLive(nodeId, childrenOf, poleStates);
+      status === 'CONFIRMED_DARK' && subtreeHasLive(nodeId, childrenOf, poleStates, state.last_confirmed_at);
 
     if (isSensorSuspect) {
       sensorSuspectsSet.add(nodeId);
@@ -198,7 +210,7 @@ export function detectFrontier(edges, poleStates, poleMap) {
       // sensor suspect (CONFIRMED_DARK with a LIVE descendant). If so, treat
       // child as live and continue the walk through it.
       const childIsSensorSuspect =
-        childStatus === 'CONFIRMED_DARK' && subtreeHasLive(childId, childrenOf, poleStates);
+        childStatus === 'CONFIRMED_DARK' && subtreeHasLive(childId, childrenOf, poleStates, childState.last_confirmed_at);
 
       if (childIsSensorSuspect) {
         sensorSuspectsSet.add(childId);
@@ -272,5 +284,4 @@ export function detectFrontier(edges, poleStates, poleMap) {
 
   return { frontierEdges, sensorSuspects: Array.from(sensorSuspectsSet), rangeEdges };
 }
-
 

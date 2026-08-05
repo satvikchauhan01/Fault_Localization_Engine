@@ -1,8 +1,8 @@
 import { getTicket, listTickets, transitionTicket } from '../tickets/service.js';
 
-export default async function ticketRoutes(fastify, options) {
+export default async function ticketRoutes(fastify, _options) {
   // GET /tickets
-  fastify.get('/', async (request, reply) => {
+  fastify.get('/', async (request, _reply) => {
     const filters = {
       state: request.query.state,
       incident_id: request.query.incident_id

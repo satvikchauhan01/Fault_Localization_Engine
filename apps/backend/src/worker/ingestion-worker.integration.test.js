@@ -213,7 +213,7 @@ describe('Ingestion Worker Integration Tests', () => {
     expect(p3.evidence_summary).toBe('power_lost');
   });
 
-  it('handles heartbeat-timeout path when evaluateTimeout triggers', async () => {
+  it('does not falsely timeout when processing telemetry from a stale device', async () => {
     const staleTime = new Date(Date.now() - 7 * 60 * 60 * 1000);
     // Artificially age the device's last_seen
     await prisma.device.update({
@@ -221,7 +221,8 @@ describe('Ingestion Worker Integration Tests', () => {
       data: { last_seen: staleTime }
     });
 
-    // Enqueue a dummy event (e.g. boot) to trigger evaluateTimeout in the worker
+    // Enqueue a boot event. The device had a stale last_seen, but the incoming
+    // telemetry itself proves it is currently reachable.
     await enqueue([{
       device_id: 'd3', pole_id: 'p3', event: 'boot', energized: true, seq: 1,
       device_ts: new Date(), fw: '1.3.0', server_received_at: new Date()
@@ -230,9 +231,8 @@ describe('Ingestion Worker Integration Tests', () => {
     await processNextTelemetryEvent();
 
     const p3 = await prisma.poleState.findUnique({ where: { pole_id: 'p3' }});
-    // Evaluate timeout should have seen last_seen is 7 hours old and marked it CONFIRMED_DARK
-    expect(p3.status).toBe('CONFIRMED_DARK');
-    expect(p3.evidence_type).toBe('timeout_fw13');
+    expect(p3.status).toBe('LIVE');
+    expect(p3.evidence_type).toBe('boot');
   });
 
 });

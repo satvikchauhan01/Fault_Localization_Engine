@@ -17,6 +17,13 @@ export default async function incidentRoutes(fastify, opts) {
   fastify.get('/', async (request, reply) => {
     try {
       const incidents = await db.incident.findMany({
+        where: {
+          ticket: {
+            state: {
+              notIn: ['VERIFIED', 'CLOSED']
+            }
+          }
+        },
         include: {
           ticket: true,
         },

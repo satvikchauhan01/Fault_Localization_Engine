@@ -45,13 +45,20 @@ export async function processNextTelemetryEvent() {
       };
 
       const { processEvent, evaluateTimeout } = await import('../localization/pole-state.js');
-      
+
       let newState = processEvent(currentState, eventObj);
 
       // Attempt to immediately resolve debounce if the event is old enough
       // (This is primarily useful for integration tests or catching up on very stale events)
+      //
+      // The event itself proves the device was seen at server_received_at. Use that
+      // timestamp for timeout evaluation, otherwise a healthy heartbeat arriving
+      // after a stale last_seen can be incorrectly converted to CONFIRMED_DARK.
       const now = new Date().getTime();
-      const timedOutState = evaluateTimeout(newState, deviceRecord, now);
+      const timeoutDeviceRecord = deviceRecord
+        ? { ...deviceRecord, last_seen: eventRecord.server_received_at }
+        : deviceRecord;
+      const timedOutState = evaluateTimeout(newState, timeoutDeviceRecord, now);
       if (timedOutState) {
         newState = timedOutState;
       }

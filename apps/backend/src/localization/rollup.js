@@ -29,6 +29,7 @@
 import {
   ROLLUP_THRESHOLD,
   CORRELATION_WINDOW_MS,
+  FW_LEGACY_THRESHOLD
 } from '../../../../packages/domain/src/thresholds.js';
 
 /**
@@ -61,33 +62,43 @@ export function evaluateDtRollup(
   currentTime = null,
   windowMs = CORRELATION_WINDOW_MS
 ) {
-  // Partition poles into monitored (has device) vs unmonitored
-  const monitoredPoleIds = poleMemberIds.filter((id) => {
+  // Partition poles into rapid-capable monitored poles (or those already confirmed dark)
+  const rapidMonitoredPoleIds = poleMemberIds.filter((id) => {
     const pole = poleMap.get(id);
-    return pole && pole.device_id !== null;
+    const isMonitored = pole && pole.device_id !== null;
+    if (!isMonitored) return false;
+
+    const state = poleStates.get(id);
+    const isDark = state && state.status === 'CONFIRMED_DARK';
+    const isRapidCapable = pole.fw_version && pole.fw_version >= FW_LEGACY_THRESHOLD;
+
+    // A pole is only counted in the rapid rollup denominator if it can report quickly,
+    // or if it has already been confirmed dark (e.g., via heartbeat timeout)
+    return isRapidCapable || isDark;
   });
 
-  if (monitoredPoleIds.length === 0) {
-    // No monitored poles — can't determine state, no rollup
+  if (rapidMonitoredPoleIds.length === 0) {
+    // No rapid-capable monitored poles — can't determine state, no rollup
     return null;
   }
 
   let hasLivePole = false;
   const darkPoles = [];
+  const livePoles = [];
 
-  for (const id of monitoredPoleIds) {
+  for (const id of rapidMonitoredPoleIds) {
     const state = poleStates.get(id);
     const status = state ? state.status : null;
+    const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
 
     if (status === 'CONFIRMED_DARK') {
-      const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
       darkPoles.push({ id, lastConfirmedAt });
     } else if (status === 'LIVE') {
-      hasLivePole = true;
+      livePoles.push({ id, lastConfirmedAt });
     }
   }
 
-  if (hasLivePole || darkPoles.length === 0) {
+  if (darkPoles.length === 0) {
     return null;
   }
 
@@ -99,12 +110,31 @@ export function evaluateDtRollup(
   const windowCutoff = refTime > 0 ? refTime - windowMs : 0;
 
   // Filter dark poles to only those observed dark within the 5-minute correlation window
-  const correlatedDarkPoleIds = darkPoles
-    .filter((p) => p.lastConfirmedAt >= windowCutoff)
-    .map((p) => p.id);
+  const correlatedDarkPoles = darkPoles.filter((p) => p.lastConfirmedAt >= windowCutoff);
+  
+  if (correlatedDarkPoles.length === 0) {
+    return null;
+  }
+
+  const faultStartTime = Math.min(...correlatedDarkPoles.map((p) => p.lastConfirmedAt));
+
+  // A LIVE pole only contradicts the fault if its active telemetry was seen AFTER the fault started
+  // (with a 1000ms grace period for clock skew). Legacy silence doesn't abort the rollup.
+  for (const p of livePoles) {
+    if (p.lastConfirmedAt >= faultStartTime - 1000) {
+      hasLivePole = true;
+      break;
+    }
+  }
+
+  if (hasLivePole) {
+    return null;
+  }
+
+  const correlatedDarkPoleIds = correlatedDarkPoles.map((p) => p.id);
 
   const darkCount = correlatedDarkPoleIds.length;
-  const darkRatio = darkCount / monitoredPoleIds.length;
+  const darkRatio = darkCount / rapidMonitoredPoleIds.length;
 
   // Rule 5: ≥90% dark within window AND no LIVE pole observed
   if (darkRatio >= ROLLUP_THRESHOLD) {
@@ -113,7 +143,7 @@ export function evaluateDtRollup(
       target_id: dtId,
       affected_pole_ids: correlatedDarkPoleIds,
       dark_count: darkCount,
-      monitored_count: monitoredPoleIds.length,
+      monitored_count: rapidMonitoredPoleIds.length,
       dark_ratio: darkRatio,
       has_live_pole: false,
     };
@@ -155,32 +185,39 @@ export function evaluateFeederRollup(
     dtRollups.set(dtId, dtResult);
   }
 
-  // Now evaluate the feeder as a whole — aggregate all monitored poles
-  let totalMonitored = 0;
+  // Now evaluate the feeder as a whole — aggregate all rapid-capable monitored poles
+  let totalRapidMonitored = 0;
   let feederHasLive = false;
   const feederDarkPoles = [];
+  const feederLivePoles = [];
 
   for (const dtId of dtIds) {
     const poleIds = dtPoleMap.get(dtId) || [];
 
     for (const id of poleIds) {
       const pole = poleMap.get(id);
-      if (!pole || pole.device_id === null) continue; // unmonitored — skip
+      const isMonitored = pole && pole.device_id !== null;
+      if (!isMonitored) continue; // unmonitored — skip
 
-      totalMonitored++;
       const state = poleStates.get(id);
       const status = state ? state.status : null;
+      const isDark = status === 'CONFIRMED_DARK';
+      const isRapidCapable = pole.fw_version && pole.fw_version >= FW_LEGACY_THRESHOLD;
 
-      if (status === 'CONFIRMED_DARK') {
-        const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
+      if (!isRapidCapable && !isDark) continue;
+
+      totalRapidMonitored++;
+      const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
+
+      if (isDark) {
         feederDarkPoles.push({ id, lastConfirmedAt });
       } else if (status === 'LIVE') {
-        feederHasLive = true;
+        feederLivePoles.push({ id, lastConfirmedAt });
       }
     }
   }
 
-  if (totalMonitored === 0 || feederHasLive || feederDarkPoles.length === 0) {
+  if (totalRapidMonitored === 0 || feederDarkPoles.length === 0) {
     return { feederRollup: null, dtRollups };
   }
 
@@ -191,21 +228,37 @@ export function evaluateFeederRollup(
 
   const windowCutoff = refTime > 0 ? refTime - windowMs : 0;
 
-  const correlatedDarkPoleIds = feederDarkPoles
-    .filter((p) => p.lastConfirmedAt >= windowCutoff)
-    .map((p) => p.id);
+  const correlatedDarkPoles = feederDarkPoles.filter((p) => p.lastConfirmedAt >= windowCutoff);
+  if (correlatedDarkPoles.length === 0) {
+    return { feederRollup: null, dtRollups };
+  }
+
+  const faultStartTime = Math.min(...correlatedDarkPoles.map((p) => p.lastConfirmedAt));
+
+  for (const p of feederLivePoles) {
+    if (p.lastConfirmedAt >= faultStartTime - 1000) {
+      feederHasLive = true;
+      break;
+    }
+  }
+
+  if (feederHasLive) {
+    return { feederRollup: null, dtRollups };
+  }
+
+  const correlatedDarkPoleIds = correlatedDarkPoles.map((p) => p.id);
 
   const totalDark = correlatedDarkPoleIds.length;
-  const feederDarkRatio = totalDark / totalMonitored;
+  const feederDarkRatio = totalDark / totalRapidMonitored;
 
-  // Rule 6: ≥90% of all monitored poles on the feeder are dark within window, no LIVE pole anywhere
+  // Rule 6: ≥90% of all rapid-capable monitored poles on the feeder are dark within window, no LIVE pole anywhere
   if (feederDarkRatio >= ROLLUP_THRESHOLD) {
     const feederRollup = {
       type: 'FEEDER_FAULT',
       target_id: feederId,
       affected_pole_ids: correlatedDarkPoleIds,
       dark_count: totalDark,
-      monitored_count: totalMonitored,
+      monitored_count: totalRapidMonitored,
       dark_ratio: feederDarkRatio,
       has_live_pole: false,
     };

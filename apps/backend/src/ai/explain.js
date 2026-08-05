@@ -1,4 +1,5 @@
 import { generateTemplateExplanation } from './template-fallback.js';
+import { AI_EXPLAINER_TIMEOUT_MS } from '../../../../packages/domain/src/thresholds.js';
 
 /**
  * @file explain.js
@@ -34,9 +35,8 @@ ${JSON.stringify(incident, null, 2)}
 `;
 
   try {
-    // Note: AbortSignal.timeout() is available in Node 16+
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const timeoutId = setTimeout(() => controller.abort(), AI_EXPLAINER_TIMEOUT_MS);
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -69,7 +69,7 @@ ${JSON.stringify(incident, null, 2)}
     return generateTemplateExplanation(incident);
   } catch (error) {
     if (error.name === 'AbortError') {
-      console.warn('[AI Explain] Request timed out after 3000ms. Using fallback.');
+      console.warn(`[AI Explain] Request timed out after ${AI_EXPLAINER_TIMEOUT_MS}ms. Using fallback.`);
     } else {
       console.error('[AI Explain] Network or unhandled error:', error.message);
     }

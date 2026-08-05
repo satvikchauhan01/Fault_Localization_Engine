@@ -83,7 +83,7 @@ export default async function simulatorRoutes(fastify, opts) {
    * GET /api/simulator/faults
    * Lists active (unrepaired) injected faults.
    */
-  fastify.get('/faults', async (request, reply) => {
+  fastify.get('/faults', async (_request, _reply) => {
     const faults = await db.simulatorFault.findMany({
       where: { repaired_at: null },
       orderBy: { injected_at: 'desc' }

@@ -1,9 +1,9 @@
 import { prisma as db } from '../db.js';
 
 const VALID_TRANSITIONS = {
-  'DETECTED': ['ACKNOWLEDGED'],
-  'ACKNOWLEDGED': ['CREW_ASSIGNED'],
-  'CREW_ASSIGNED': ['RESOLVED'],
+  'DETECTED': ['ACKNOWLEDGED', 'VERIFIED'],
+  'ACKNOWLEDGED': ['CREW_ASSIGNED', 'VERIFIED'],
+  'CREW_ASSIGNED': ['RESOLVED', 'VERIFIED'],
   'RESOLVED': ['VERIFIED'],
   'VERIFIED': ['CLOSED'],
   'CLOSED': []
@@ -43,7 +43,8 @@ export async function listTickets(filters = {}) {
  * Throws an Error if the transition is illegal.
  */
 export async function transitionTicket(id, newState, options = { isSystem: false }) {
-  const ticket = await db.ticket.findUnique({ where: { id } });
+  const client = options.db || db;
+  const ticket = await client.ticket.findUnique({ where: { id } });
   
   if (!ticket) {
     throw new Error(`Ticket with id ${id} not found.`);
@@ -70,7 +71,7 @@ export async function transitionTicket(id, newState, options = { isSystem: false
     updateData.verified_at = new Date();
   }
 
-  return await db.ticket.update({
+  return await client.ticket.update({
     where: { id },
     data: updateData
   });

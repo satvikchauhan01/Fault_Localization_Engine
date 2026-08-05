@@ -9,7 +9,6 @@ import { buildApp } from '../app.js';
 import { applyNoiseToPayloads, isFwLegacy, isDyingMessageLost } from './noise.js';
 import { injectFault, getPolesForFault, buildTelemetryPayload } from './ground-truth.js';
 import { processNextTelemetryEvent } from '../worker/ingestion-worker.js';
-import crypto from 'crypto';
 
 const FEEDER_ID = 'feeder-noise-1';
 const DT1_ID = 'dt-noise-1';

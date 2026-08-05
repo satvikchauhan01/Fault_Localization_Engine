@@ -1,3 +1,5 @@
+import reactPlugin from 'eslint-plugin-react';
+
 export default [
   {
     ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**'],
@@ -15,22 +17,43 @@ export default [
       globals: {
         console: 'readonly',
         process: 'readonly',
+        Buffer: 'readonly',
         __dirname: 'readonly',
         module: 'readonly',
         require: 'readonly',
         exports: 'readonly',
+        fetch: 'readonly',
+        AbortController: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        document: 'readonly',
+        window: 'readonly',
         describe: 'readonly',
         it: 'readonly',
         expect: 'readonly',
+        beforeAll: 'readonly',
         beforeEach: 'readonly',
+        afterAll: 'readonly',
         afterEach: 'readonly',
         vi: 'readonly',
       },
     },
+    plugins: {
+      react: reactPlugin,
+    },
     rules: {
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_|^telemetryUrl$' }],
       'no-console': 'off',
       'no-undef': 'error',
+      'react/jsx-uses-react': 'warn',
+      'react/jsx-uses-vars': 'warn',
+    },
+    settings: {
+      react: {
+        version: 'detect',
+      },
     },
   },
 ];

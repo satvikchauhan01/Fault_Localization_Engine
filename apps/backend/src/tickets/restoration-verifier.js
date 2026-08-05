@@ -28,8 +28,8 @@ export async function checkTicketRestoration(ticketId, prismaClient) {
     throw new Error(`Ticket ${ticketId} not found.`);
   }
 
-  if (ticket.state !== 'RESOLVED') {
-    throw new Error(`Ticket ${ticketId} is not in RESOLVED state (current: ${ticket.state}). Restoration check is only valid on RESOLVED tickets.`);
+  if (ticket.state === 'VERIFIED' || ticket.state === 'CLOSED') {
+    throw new Error(`Ticket ${ticketId} is already in a terminal state (current: ${ticket.state}).`);
   }
 
   const affectedPoleIds = Array.isArray(ticket.incident.affected_pole_ids)
@@ -38,7 +38,7 @@ export async function checkTicketRestoration(ticketId, prismaClient) {
 
   if (affectedPoleIds.length === 0) {
     // Nothing to check — treat as verified (edge case: incident with no affected poles)
-    await transitionTicket(ticketId, 'VERIFIED', { isSystem: true });
+    await transitionTicket(ticketId, 'VERIFIED', { isSystem: true, db });
     return { verified: true, stillDarkPoleIds: [] };
   }
 
@@ -78,7 +78,7 @@ export async function checkTicketRestoration(ticketId, prismaClient) {
     where: { id: ticketId },
     data: { still_dark_pole_ids: null }
   });
-  await transitionTicket(ticketId, 'VERIFIED', { isSystem: true });
+  await transitionTicket(ticketId, 'VERIFIED', { isSystem: true, db });
   return { verified: true, stillDarkPoleIds: [] };
 }
 
@@ -92,14 +92,14 @@ export async function checkTicketRestoration(ticketId, prismaClient) {
 export async function runRestorationVerifier(prismaClient) {
   const db = prismaClient || defaultPrisma;
 
-  const resolvedTickets = await db.ticket.findMany({
-    where: { state: 'RESOLVED' },
+  const activeTickets = await db.ticket.findMany({
+    where: { state: { notIn: ['VERIFIED', 'CLOSED'] } },
     select: { id: true }
   });
 
   const results = [];
 
-  for (const { id } of resolvedTickets) {
+  for (const { id } of activeTickets) {
     try {
       const result = await checkTicketRestoration(id, db);
       results.push({ ticketId: id, ...result });

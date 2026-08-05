@@ -27,7 +27,7 @@ import { getPolesForFault, buildTelemetryPayload } from './ground-truth.js';
 import { processNextTelemetryEvent } from '../worker/ingestion-worker.js';
 import { buildAllInferredTrees } from '../topology/inferred.js';
 import crypto from 'crypto';
-import { emitHealthyHeartbeats, getAffectedPoleIds } from './heartbeat-emitter.js';
+import { emitHealthyHeartbeats } from './heartbeat-emitter.js';
 import { evaluateTimeout } from '../localization/pole-state.js';
 import { HEARTBEAT_TIMEOUT_MS } from '../../../../packages/domain/src/thresholds.js';
 

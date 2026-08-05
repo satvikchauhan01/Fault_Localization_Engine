@@ -175,17 +175,22 @@ export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
  * Starts the periodic heartbeat emitter.
  *
  * @param {string} telemetryBaseUrl  Base URL of the backend.
+ * @param {{ startup?: boolean }} [options]
  * @returns {{ interval: object, startupTimer: object }|null}
  */
-export function startHeartbeatEmitter(telemetryBaseUrl) {
+export function startHeartbeatEmitter(telemetryBaseUrl, options = {}) {
   if (!telemetryBaseUrl) {
     console.warn('[heartbeat-emitter] No telemetryBaseUrl provided -- emitter disabled.');
     return null;
   }
 
+  const startupEnabled = options.startup !== false;
   console.log(
     '[heartbeat-emitter] Starting. Interval: ' +
-    (HEARTBEAT_EMIT_INTERVAL_MS / 60_000) + ' min.'
+    (HEARTBEAT_EMIT_INTERVAL_MS / 60_000) +
+    ' min. Startup emit: ' +
+    (startupEnabled ? 'enabled' : 'disabled') +
+    '.'
   );
 
   const runOnce = () => {
@@ -201,7 +206,7 @@ export function startHeartbeatEmitter(telemetryBaseUrl) {
   };
 
   // Initial emit after short startup delay (HTTP server must be ready first).
-  const startupTimer = setTimeout(runOnce, 15_000);
+  const startupTimer = startupEnabled ? setTimeout(runOnce, 15_000) : null;
 
   // Recurring emit.
   const interval = setInterval(runOnce, HEARTBEAT_EMIT_INTERVAL_MS);

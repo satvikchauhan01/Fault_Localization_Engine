@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildApp } from '../app.js';
 import { prisma } from '../db.js';
-import { seedDatabase } from '../scripts/seed.js';
 
 let app;
 

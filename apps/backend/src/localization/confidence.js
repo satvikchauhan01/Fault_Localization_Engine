@@ -212,9 +212,11 @@ export function buildConfidenceEvidence(
     isFw12Only = allFw12;
   }
 
+  const topologySource = frontierEdge.source || frontierEdge.topology_source || 'AUTHORITATIVE';
+
   return {
     incident_type: incidentType,
-    topology_source: frontierEdge.source,
+    topology_source: topologySource,
     ambiguous_edge: frontierEdge.ambiguous === true,
     has_range: isRange,
     range_pole_count: rangePoleCount,
