@@ -25,10 +25,11 @@ export async function syncIncidents(computedIncidents, dtId, tx) {
     include: { ticket: true }
   });
 
-  const activeForDt = allActiveIncidents.filter(inc => 
-    (inc.upstream_live_pole_id && dtPoleIds.includes(inc.upstream_live_pole_id)) ||
-    (Array.isArray(inc.affected_pole_ids) && inc.affected_pole_ids.some(id => dtPoleIds.includes(id)))
-  );
+  // We remove the activeForDt filter because computedIncidents may contain DT_FAULTs
+  // for other DTs on the same feeder (returned by evaluateFeederRollup). Filtering by
+  // the triggering dtId's poles prevents us from finding the existing tickets for those other DTs,
+  // causing massive duplication.
+  const activeIncidentsToCheck = allActiveIncidents;
 
   for (const inc of computedIncidents) {
     const overlappingIncidents = [];
@@ -36,7 +37,7 @@ export async function syncIncidents(computedIncidents, dtId, tx) {
     // Find all matching active incidents by checking if any of the newly computed affected_pole_ids
     // intersect with the existing incident's affected_pole_ids. If they intersect, it's the same physical fault.
     // We explicitly DO NOT check if activeInc.type === inc.type to allow for escalation (SPAN -> DT).
-    for (const activeInc of activeForDt) {
+    for (const activeInc of activeIncidentsToCheck) {
       const existingAffected = Array.isArray(activeInc.affected_pole_ids) ? activeInc.affected_pole_ids : [];
       const newAffected = Array.isArray(inc.affected_pole_ids) ? inc.affected_pole_ids : [];
       const intersects = newAffected.some(id => existingAffected.includes(id));
@@ -103,8 +104,8 @@ export async function syncIncidents(computedIncidents, dtId, tx) {
       // We STILL want to remove the OTHER overlapping incidents so they aren't matched again, and close them.
       for (let i = 1; i < overlappingIncidents.length; i++) {
         const overlap = overlappingIncidents[i];
-        const idx = activeForDt.indexOf(overlap);
-        if (idx !== -1) activeForDt.splice(idx, 1);
+        const idx = activeIncidentsToCheck.indexOf(overlap);
+        if (idx !== -1) activeIncidentsToCheck.splice(idx, 1);
         
         await tx.ticket.update({
           where: { id: overlap.ticket.id },

@@ -17,8 +17,8 @@ import { fetchAndCacheScheduledOutages } from '../scheduled-outages/adapter.js';
 export async function scheduledOutageRoutes(fastify, opts = {}) {
   const db = opts.prisma || fastify.prisma;
 
-  // GET /scheduled-outages — Feed endpoint returning all stored scheduled outages
-  fastify.get('/scheduled-outages', async (req, reply) => {
+  // GET / — Feed endpoint returning all stored scheduled outages
+  fastify.get('/', async (req, reply) => {
     try {
       const outages = await db.scheduledOutage.findMany({
         orderBy: { start: 'desc' },
@@ -44,8 +44,8 @@ export async function scheduledOutageRoutes(fastify, opts = {}) {
     }
   });
 
-  // POST /scheduled-outages — Ingests/caches array or single scheduled outage entry
-  fastify.post('/scheduled-outages', async (req, reply) => {
+  // POST / — Ingests/caches array or single scheduled outage entry
+  fastify.post('/', async (req, reply) => {
     const payload = Array.isArray(req.body) ? req.body : [req.body];
 
     try {

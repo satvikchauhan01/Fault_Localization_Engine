@@ -39,6 +39,39 @@ export default async function incidentRoutes(fastify, opts) {
   });
 
   /**
+   * GET /api/incidents/history
+   * Returns all resolved/verified/closed incidents for the history page.
+   */
+  fastify.get('/history', async (request, reply) => {
+    try {
+      const { limit = 100, offset = 0, type, confidence } = request.query;
+      const where = {
+        ticket: {
+          state: { in: ['VERIFIED', 'CLOSED', 'RESOLVED'] }
+        }
+      };
+      if (type) where.type = type;
+      if (confidence) where.confidence = confidence;
+
+      const [incidents, total] = await Promise.all([
+        db.incident.findMany({
+          where,
+          include: { ticket: true },
+          orderBy: { first_detected_at: 'desc' },
+          take: parseInt(limit),
+          skip: parseInt(offset),
+        }),
+        db.incident.count({ where }),
+      ]);
+
+      return { incidents, total };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
+  /**
    * GET /api/incidents/:id
    * Retrieves a specific incident by ID, including its ticket.
    */

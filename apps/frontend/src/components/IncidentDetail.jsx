@@ -1,6 +1,6 @@
 import React, { useMemo, useEffect, useState } from 'react';
 import { useTicketWorkflow } from '../hooks/useTicketWorkflow';
-import { X, CheckCircle, ShieldAlert, Loader2, ArrowRight, Zap, Briefcase, Activity, Sparkles, MapPin } from 'lucide-react';
+import { X, CheckCircle, ShieldAlert, Loader2, ArrowRight, Zap, Briefcase, Activity, Sparkles, MapPin, Calendar } from 'lucide-react';
 
 export default function IncidentDetail({ 
   incidentId, 
@@ -272,6 +272,19 @@ export default function IncidentDetail({
             {ticket?.state === 'VERIFIED' && <CheckCircle className="w-6 h-6 text-green-400" />}
           </div>
         </div>
+
+        {/* Scheduled Outage Overlap Warning */}
+        {incident.scheduled_outage_overlap && (
+          <div className="flex items-start gap-3 bg-indigo-900/25 border border-indigo-500/40 rounded-xl px-4 py-3">
+            <Calendar className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-xs font-semibold text-indigo-300 uppercase tracking-wider">Scheduled Outage Overlap</p>
+              <p className="text-xs text-indigo-200/70 mt-0.5 leading-relaxed">
+                This fault overlaps with a planned maintenance window. Confidence is reduced — this may be intentional.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Location Details Block */}
         {renderLocationBlock()}

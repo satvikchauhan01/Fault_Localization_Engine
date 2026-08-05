@@ -37,7 +37,7 @@ export function buildApp(opts = {}) {
   app.register(telemetryRoutes, { prisma });
 
   // Scheduled outages routes
-  app.register(scheduledOutageRoutes, { prisma });
+  app.register(scheduledOutageRoutes, { prefix: '/api/scheduled-outages', prisma });
 
   // Ticket routes
   app.register(ticketRoutes, { prefix: '/api/tickets' });
