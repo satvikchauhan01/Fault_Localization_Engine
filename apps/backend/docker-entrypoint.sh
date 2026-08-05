@@ -4,7 +4,7 @@
 # 1. Wait for PostgreSQL to accept connections (up to 30s)
 # 2. Run Prisma migrations (idempotent — skips if already applied)
 # 3. Run seed script (idempotent — skips if DB already populated)
-# 4. Start the application server
+# 4. Start the application server or worker process
 set -e
 
 RETRIES=30
@@ -24,6 +24,12 @@ until node -e "
 done
 echo "[entrypoint] ✅ PostgreSQL is ready."
 
+if [ "$1" = "worker" ]; then
+  echo "[entrypoint] Starting ingestion worker..."
+  cd /app/apps/backend
+  exec node src/worker/run.js
+fi
+
 echo "[entrypoint] Running Prisma migrations..."
 cd /app/apps/backend
 npx prisma migrate deploy
@@ -37,10 +43,7 @@ echo "[entrypoint] Building runtime topology..."
 node src/scripts/build-topology.js
 echo "[entrypoint] ✅ Topology ready."
 
-if [ "$1" = "worker" ]; then
-  echo "[entrypoint] Starting ingestion worker..."
-  exec node src/worker/run.js
-elif [ -n "$1" ]; then
+if [ -n "$1" ]; then
   echo "[entrypoint] Executing custom command..."
   exec "$@"
 else
