@@ -18,7 +18,13 @@ export async function processNextTelemetryEvent() {
       SELECT id 
       FROM telemetry_inbox 
       WHERE status = 'PENDING' 
-      ORDER BY server_received_at ASC 
+      ORDER BY 
+        CASE 
+          WHEN event = 'power_lost' THEN 0 
+          WHEN event = 'power_restored' THEN 1 
+          ELSE 2 
+        END ASC,
+        server_received_at ASC
       LIMIT 1 
       FOR UPDATE SKIP LOCKED
     `;
