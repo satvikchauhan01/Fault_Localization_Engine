@@ -5,6 +5,7 @@
  */
 
 import { prisma as defaultPrisma } from '../db.js';
+import { explainIncident } from '../ai/explain.js';
 
 export default async function incidentRoutes(fastify, opts) {
   const db = opts.prisma || defaultPrisma;
@@ -45,6 +46,30 @@ export default async function incidentRoutes(fastify, opts) {
         return reply.status(404).send({ error: 'Incident not found' });
       }
       return incident;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
+  /**
+   * GET /api/incidents/:id/explain
+   * Returns a minimal AI explanation of the incident.
+   */
+  fastify.get('/:id/explain', async (request, reply) => {
+    const { id } = request.params;
+    try {
+      const incident = await db.incident.findUnique({
+        where: { id },
+        include: { ticket: true },
+      });
+      if (!incident) {
+        return reply.status(404).send({ error: 'Incident not found' });
+      }
+      
+      console.log('[EXPLAIN] Incident before explain:', incident);
+      const explanation = await explainIncident(incident);
+      return { explanation };
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: 'Internal Server Error' });

@@ -34,7 +34,8 @@ export default async function ticketRoutes(fastify, options) {
       const ticket = await transitionTicket(id, state);
       return ticket;
     } catch (error) {
-      if (error.message.includes('Illegal state transition') || error.message.includes('State VERIFIED can only be set by the system')) {
+      if (error.message.includes('Illegal state transition') || 
+          error.message.includes('State VERIFIED can only be set by the system')) {
         return reply.status(400).send({ error: error.message });
       }
       if (error.message.includes('not found')) {

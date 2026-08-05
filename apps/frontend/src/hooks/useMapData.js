@@ -1,7 +1,12 @@
 import { useState, useEffect } from 'react';
 
-export function useIncidents(pollingIntervalMs = 3000) {
-  const [incidents, setIncidents] = useState([]);
+export function useMapData(pollingIntervalMs = 5000) {
+  const [mapData, setMapData] = useState({
+    feeders: [],
+    transformers: [],
+    poles: [],
+    topology_edges: []
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -10,27 +15,23 @@ export function useIncidents(pollingIntervalMs = 3000) {
     const controller = new AbortController();
     const { signal } = controller;
 
-    async function fetchIncidents() {
+    async function fetchMapData() {
       try {
-        const res = await fetch('/api/incidents', { signal });
+        const res = await fetch('/api/map/data', { signal });
         if (!res.ok) {
           throw new Error(`API returned status: ${res.status}`);
         }
         const data = await res.json();
         
         if (isMounted) {
-          setIncidents(data);
+          setMapData(data);
           setError(null);
-          // Only clear loading state after the first successful fetch
           if (isLoading) setIsLoading(false);
         }
       } catch (err) {
-        if (err.name === 'AbortError') {
-          // Request was cancelled intentionally, do nothing
-          return;
-        }
+        if (err.name === 'AbortError') return;
         if (isMounted) {
-          console.error("Failed to fetch incidents:", err);
+          console.error("Failed to fetch map data:", err);
           setError(err.message || 'Failed to connect to backend.');
           if (isLoading) setIsLoading(false);
         }
@@ -38,17 +39,17 @@ export function useIncidents(pollingIntervalMs = 3000) {
     }
 
     // Initial fetch
-    fetchIncidents();
+    fetchMapData();
 
-    // Setup polling
-    const intervalId = setInterval(fetchIncidents, pollingIntervalMs);
+    // Setup polling for live state updates
+    const intervalId = setInterval(fetchMapData, pollingIntervalMs);
 
     return () => {
       isMounted = false;
       clearInterval(intervalId);
       controller.abort();
     };
-  }, [pollingIntervalMs]); // Only re-run if polling interval changes
+  }, [pollingIntervalMs]);
 
-  return { incidents, isLoading, error };
+  return { mapData, isLoading, error };
 }
