@@ -30,14 +30,14 @@ This repository contains the completed **Fault Localization Engine**, simulating
 ## 🌍 Cloud Deployment (Railway)
 
 We have configured the repository to run entirely in the cloud via [Railway.app](https://railway.app/).
-For complete cloud deployment instructions, see [DEPLOYMENT.md](./DEPLOYMENT.md).
+For complete cloud deployment instructions, see [04-DEPLOYMENT.md](./04-DEPLOYMENT.md).
 
 ## 📄 Documentation
 
 - [01-ARCHITECTURE.md](./01-ARCHITECTURE.md) - System design and database schema.
 - [02-DECISIONS.md](./02-DECISIONS.md) - Trade-offs and technical decisions.
 - [03-AI-WORKFLOW.md](./03-AI-WORKFLOW.md) - AI verification strategies and troubleshooting logs.
-- [DEPLOYMENT.md](./DEPLOYMENT.md) - In-depth cloud hosting guide.
+- [04-DEPLOYMENT.md](./04-DEPLOYMENT.md) - In-depth cloud hosting guide.
 
 ## 🛠 Project Reset
 
