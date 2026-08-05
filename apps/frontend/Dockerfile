@@ -24,6 +24,6 @@ FROM nginx:stable-alpine AS runtime
 COPY --from=build /app/apps/frontend/dist /usr/share/nginx/html
 
 # Nginx config: proxy /api to backend, serve SPA from root
-COPY apps/frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/apps/frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

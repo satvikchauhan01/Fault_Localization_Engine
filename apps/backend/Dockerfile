@@ -33,8 +33,8 @@ COPY package.json ./
 RUN cd apps/backend && npx prisma generate
 
 # Entrypoint script handles: wait-for-db → migrate → seed → start server
-COPY apps/backend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN cp /app/apps/backend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3000
 ENTRYPOINT ["docker-entrypoint.sh"]
