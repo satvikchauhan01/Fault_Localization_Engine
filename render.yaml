@@ -1,18 +1,13 @@
 ﻿# KSPDB Fault Localization Engine - Render Blueprint
-services:
-  # 1. PostgreSQL Database
-  - type: pserv
-    name: kspdb-db
-    plan: free
-    envVars:
-      - key: POSTGRES_USER
-        value: postgres
-      - key: POSTGRES_PASSWORD
-        generateValue: true
-      - key: POSTGRES_DB
-        value: kspdb_fault_localization
 
-  # 2. Backend (Node.js API)
+databases:
+  - name: kspdb-db
+    plan: free
+    databaseName: kspdb_fault_localization
+    user: postgres
+
+services:
+  # 1. Backend (Node.js API)
   - type: web
     name: kspdb-backend
     env: docker
@@ -32,7 +27,7 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
 
-  # 3. Worker
+  # 2. Worker
   - type: worker
     name: kspdb-worker
     env: docker
@@ -53,7 +48,7 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
 
-  # 4. Frontend (Nginx SPA)
+  # 3. Frontend (Nginx SPA)
   - type: web
     name: kspdb-frontend
     env: docker
