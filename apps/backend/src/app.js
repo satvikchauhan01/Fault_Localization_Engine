@@ -33,8 +33,8 @@ export function buildApp(opts = {}) {
     return { status: 'ok', service: 'kspdb-backend' };
   });
 
-  // Telemetry routes
-  app.register(telemetryRoutes, { prisma });
+  // Telemetry routes — suppress per-request logs (heartbeat emitter fires ~3,990 req/10min)
+  app.register(telemetryRoutes, { prisma, logLevel: 'warn' });
 
   // Scheduled outages routes
   app.register(scheduledOutageRoutes, { prefix: '/api/scheduled-outages', prisma });
