@@ -29,7 +29,6 @@
 import {
   ROLLUP_THRESHOLD,
   CORRELATION_WINDOW_MS,
-  FW_LEGACY_THRESHOLD
 } from '../../../../packages/domain/src/thresholds.js';
 
 /**
@@ -62,23 +61,14 @@ export function evaluateDtRollup(
   currentTime = null,
   windowMs = CORRELATION_WINDOW_MS
 ) {
-  // Partition poles into rapid-capable monitored poles (or those already confirmed dark)
-  const rapidMonitoredPoleIds = poleMemberIds.filter((id) => {
+  // Partition poles into monitored (has device) vs unmonitored
+  const monitoredPoleIds = poleMemberIds.filter((id) => {
     const pole = poleMap.get(id);
-    const isMonitored = pole && pole.device_id !== null;
-    if (!isMonitored) return false;
-
-    const state = poleStates.get(id);
-    const isDark = state && state.status === 'CONFIRMED_DARK';
-    const isRapidCapable = pole.fw_version && pole.fw_version >= FW_LEGACY_THRESHOLD;
-
-    // A pole is only counted in the rapid rollup denominator if it can report quickly,
-    // or if it has already been confirmed dark (e.g., via heartbeat timeout)
-    return isRapidCapable || isDark;
+    return pole && pole.device_id !== null;
   });
 
-  if (rapidMonitoredPoleIds.length === 0) {
-    // No rapid-capable monitored poles — can't determine state, no rollup
+  if (monitoredPoleIds.length === 0) {
+    // No monitored poles — can't determine state, no rollup
     return null;
   }
 
@@ -86,7 +76,7 @@ export function evaluateDtRollup(
   const darkPoles = [];
   const livePoles = [];
 
-  for (const id of rapidMonitoredPoleIds) {
+  for (const id of monitoredPoleIds) {
     const state = poleStates.get(id);
     const status = state ? state.status : null;
     const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
@@ -134,7 +124,7 @@ export function evaluateDtRollup(
   const correlatedDarkPoleIds = correlatedDarkPoles.map((p) => p.id);
 
   const darkCount = correlatedDarkPoleIds.length;
-  const darkRatio = darkCount / rapidMonitoredPoleIds.length;
+  const darkRatio = darkCount / monitoredPoleIds.length;
 
   // Rule 5: ≥90% dark within window AND no LIVE pole observed
   if (darkRatio >= ROLLUP_THRESHOLD) {
@@ -143,7 +133,7 @@ export function evaluateDtRollup(
       target_id: dtId,
       affected_pole_ids: correlatedDarkPoleIds,
       dark_count: darkCount,
-      monitored_count: rapidMonitoredPoleIds.length,
+      monitored_count: monitoredPoleIds.length,
       dark_ratio: darkRatio,
       has_live_pole: false,
     };
@@ -185,8 +175,8 @@ export function evaluateFeederRollup(
     dtRollups.set(dtId, dtResult);
   }
 
-  // Now evaluate the feeder as a whole — aggregate all rapid-capable monitored poles
-  let totalRapidMonitored = 0;
+  // Now evaluate the feeder as a whole — aggregate all monitored poles
+  let totalMonitored = 0;
   let feederHasLive = false;
   const feederDarkPoles = [];
   const feederLivePoles = [];
@@ -199,17 +189,12 @@ export function evaluateFeederRollup(
       const isMonitored = pole && pole.device_id !== null;
       if (!isMonitored) continue; // unmonitored — skip
 
+      totalMonitored++;
       const state = poleStates.get(id);
       const status = state ? state.status : null;
-      const isDark = status === 'CONFIRMED_DARK';
-      const isRapidCapable = pole.fw_version && pole.fw_version >= FW_LEGACY_THRESHOLD;
-
-      if (!isRapidCapable && !isDark) continue;
-
-      totalRapidMonitored++;
       const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
 
-      if (isDark) {
+      if (status === 'CONFIRMED_DARK') {
         feederDarkPoles.push({ id, lastConfirmedAt });
       } else if (status === 'LIVE') {
         feederLivePoles.push({ id, lastConfirmedAt });
@@ -217,7 +202,7 @@ export function evaluateFeederRollup(
     }
   }
 
-  if (totalRapidMonitored === 0 || feederDarkPoles.length === 0) {
+  if (totalMonitored === 0 || feederDarkPoles.length === 0) {
     return { feederRollup: null, dtRollups };
   }
 
@@ -249,16 +234,16 @@ export function evaluateFeederRollup(
   const correlatedDarkPoleIds = correlatedDarkPoles.map((p) => p.id);
 
   const totalDark = correlatedDarkPoleIds.length;
-  const feederDarkRatio = totalDark / totalRapidMonitored;
+  const feederDarkRatio = totalDark / totalMonitored;
 
-  // Rule 6: ≥90% of all rapid-capable monitored poles on the feeder are dark within window, no LIVE pole anywhere
+  // Rule 6: ≥90% of all monitored poles on the feeder are dark within window, no LIVE pole anywhere
   if (feederDarkRatio >= ROLLUP_THRESHOLD) {
     const feederRollup = {
       type: 'FEEDER_FAULT',
       target_id: feederId,
       affected_pole_ids: correlatedDarkPoleIds,
       dark_count: totalDark,
-      monitored_count: totalRapidMonitored,
+      monitored_count: totalMonitored,
       dark_ratio: feederDarkRatio,
       has_live_pole: false,
     };

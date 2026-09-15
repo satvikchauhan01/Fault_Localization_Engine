@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { X, Calendar, Plus, Clock, CheckCircle, AlertCircle, Trash2, Info } from 'lucide-react';
-import { useScheduledOutages } from '../hooks/useScheduledOutages';
+import { X, Calendar, Plus, Clock, CheckCircle, AlertCircle, Info } from 'lucide-react';
 
 const SCOPE_COLORS = {
   DT: { bg: 'bg-blue-500/15', text: 'text-blue-400', border: 'border-blue-500/30', dot: 'bg-blue-500' },
@@ -26,9 +25,7 @@ function formatDt(iso) {
 }
 
 // --- Create Outage Form ---
-function CreateOutageForm({ mapData, onCreated, onCancel }) {
-  const { createOutage } = useScheduledOutages();
-
+function CreateOutageForm({ mapData, createOutage, onCreated, onCancel }) {
   const feeders = useMemo(() => mapData?.feeders ?? [], [mapData]);
   const transformers = useMemo(() => mapData?.transformers ?? [], [mapData]);
 
@@ -225,8 +222,7 @@ function OutageCard({ outage }) {
 }
 
 // --- Main Panel ---
-export default function ScheduledOutagesPanel({ onClose, mapData }) {
-  const { outages, isLoading, error } = useScheduledOutages(15000);
+export default function ScheduledOutagesPanel({ onClose, mapData, outages, isLoading, error, createOutage }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState('ALL');
 
@@ -303,6 +299,7 @@ export default function ScheduledOutagesPanel({ onClose, mapData }) {
           <div className="flex-shrink-0 mx-4 mt-4">
             <CreateOutageForm
               mapData={mapData}
+              createOutage={createOutage}
               onCreated={() => setShowForm(false)}
               onCancel={() => setShowForm(false)}
             />

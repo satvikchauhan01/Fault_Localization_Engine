@@ -23,7 +23,6 @@
 13. [Tunable Constants](#13-tunable-constants)
 14. [Known Failure Cases & Limitations](#14-known-failure-cases--limitations)
 15. [Measured Performance](#15-measured-performance)
-16. [Deployment](#16-deployment)
 
 ---
 
@@ -433,8 +432,11 @@ Invalid transitions (e.g. VERIFIED -> ACKNOWLEDGED) are rejected with a 400.
 File: `apps/backend/src/tickets/restoration-verifier.js`
 
 The worker calls `runRestorationVerifier()` every **15 seconds**. For every
-non-terminal ticket it checks whether all monitored poles in
-`incident.affected_pole_ids` have `pole_state.status = 'LIVE'`.
+ticket in `RESOLVED` state it checks whether all monitored poles in
+`incident.affected_pole_ids` have `pole_state.status = 'LIVE'`. Tickets that
+have not yet been marked `RESOLVED` by a crew (`DETECTED`, `ACKNOWLEDGED`,
+`CREW_ASSIGNED`) are left untouched — restoration is confirmed, not decided,
+by telemetry.
 
 - Unmonitored poles (no pole_state row) are **skipped** — absence of evidence
   is not evidence of darkness.
@@ -656,41 +658,4 @@ worker poll time + localization runtime + 5-second UI poll interval).
 
 ---
 
-## 16. Deployment
 
-### Single-Command Start
-
-```bash
-cp .env.example .env   # edit ANTHROPIC_API_KEY if desired
-docker compose up
-```
-
-The app is usable at http://localhost after all four healthchecks pass
-(typically ~45 s on first start for seeding to complete).
-
-### Environment Variables
-
-See `.env.example` for all variables. Key ones:
-
-| Variable | Default | Notes |
-|---|---|---|
-| `DATABASE_URL` | set by compose | Postgres connection string |
-| `ANTHROPIC_API_KEY` | (empty) | Optional. AI explainer disabled if unset. |
-| `FORCE_RESEED` | `0` | Set to `1` to wipe and re-seed on next backend start |
-| `TELEMETRY_BASE_URL` | `http://localhost:3000` | Worker-to-backend URL (set by compose) |
-| `HEARTBEAT_EMITTER_STARTUP` | `1` | Emit heartbeats immediately on worker start |
-
-### Re-seeding
-
-```bash
-FORCE_RESEED=1 docker compose up backend
-```
-
-Wipes all operational data (incidents, tickets, pole states, telemetry inbox)
-and regenerates the synthetic network. A second start without FORCE_RESEED is
-a no-op (idempotency guard on Feeder row count).
-
-### Migrations
-
-The backend runs `prisma migrate deploy` automatically on start before the
-seed script. No manual migration steps are required.

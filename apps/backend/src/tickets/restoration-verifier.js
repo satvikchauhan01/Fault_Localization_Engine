@@ -28,8 +28,8 @@ export async function checkTicketRestoration(ticketId, prismaClient) {
     throw new Error(`Ticket ${ticketId} not found.`);
   }
 
-  if (ticket.state === 'VERIFIED' || ticket.state === 'CLOSED') {
-    throw new Error(`Ticket ${ticketId} is already in a terminal state (current: ${ticket.state}).`);
+  if (ticket.state !== 'RESOLVED') {
+    throw new Error(`Ticket ${ticketId} is not in RESOLVED state (current: ${ticket.state}). Restoration check is only valid on RESOLVED tickets.`);
   }
 
   const affectedPoleIds = Array.isArray(ticket.incident.affected_pole_ids)
@@ -92,14 +92,14 @@ export async function checkTicketRestoration(ticketId, prismaClient) {
 export async function runRestorationVerifier(prismaClient) {
   const db = prismaClient || defaultPrisma;
 
-  const activeTickets = await db.ticket.findMany({
-    where: { state: { notIn: ['VERIFIED', 'CLOSED'] } },
+  const resolvedTickets = await db.ticket.findMany({
+    where: { state: 'RESOLVED' },
     select: { id: true }
   });
 
   const results = [];
 
-  for (const { id } of activeTickets) {
+  for (const { id } of resolvedTickets) {
     try {
       const result = await checkTicketRestoration(id, db);
       results.push({ ticketId: id, ...result });

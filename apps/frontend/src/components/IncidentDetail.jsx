@@ -209,7 +209,7 @@ export default function IncidentDetail({
   };
 
   return (
-    <div className="absolute top-4 right-4 z-[1000] w-96 max-h-[calc(100vh-8rem)] overflow-y-auto custom-scrollbar glass-panel shadow-2xl rounded-xl border border-slate-700/80 animate-in slide-in-from-right-8 duration-300">
+    <div className="absolute top-4 inset-x-4 sm:left-auto sm:right-4 sm:w-96 z-[1000] max-h-[calc(100vh-8rem)] overflow-y-auto custom-scrollbar glass-panel shadow-2xl rounded-xl border border-slate-700/80 animate-in slide-in-from-right-8 duration-300">
       
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-slate-700/50 bg-slate-900/60 backdrop-blur-md rounded-t-xl sticky top-0 z-10">

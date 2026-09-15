@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  History, X, ChevronDown, ChevronUp, Search, Filter,
-  CheckCircle2, Clock, Zap, AlertTriangle, Activity,
+  History, ChevronDown, ChevronUp, Search, Filter,
+  CheckCircle2, Clock, Zap, AlertTriangle,
   MapPin, Layers, BarChart2, RefreshCw, Calendar
 } from 'lucide-react';
 

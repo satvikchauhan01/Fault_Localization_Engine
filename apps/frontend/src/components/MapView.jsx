@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, useMap, Polygon, Polyline, Marker } from 'react-leaflet';
 import { divIcon } from 'leaflet';
-import { Layers, Zap, Hexagon, Network, EyeOff } from 'lucide-react';
+import { Layers, Zap, Hexagon, Network, EyeOff, Wrench } from 'lucide-react';
+import { resolveActiveOutagePoles } from '../utils/scheduledOutageOverlay';
 
 // Helper component to center map on selected incident or active feeder
 function MapCenterer({ selectedIncidentId, activeFeederId, incidents, poles }) {
@@ -47,7 +48,7 @@ function MapCenterer({ selectedIncidentId, activeFeederId, incidents, poles }) {
   return null;
 }
 
-export default function MapView({ incidents = [], mapData, isLoading, selectedIncidentId, onSelectIncident }) {
+export default function MapView({ incidents = [], mapData, outages = [], isLoading, selectedIncidentId, onSelectIncident }) {
   // UI toggles
   const [showPoles, setShowPoles] = useState(true);
   const [showAuthEdges, setShowAuthEdges] = useState(true);
@@ -122,6 +123,35 @@ export default function MapView({ incidents = [], mapData, isLoading, selectedIn
     }).filter(Boolean);
   }, [incidents, mapData.poles, selectedIncidentId]);
 
+  // Poles currently inside an active scheduled-outage window — presentation
+  // only, derived client-side; does not touch incidents/tickets/telemetry.
+  const outagePoleMap = useMemo(
+    () => resolveActiveOutagePoles(outages, mapData.poles, mapData.topology_edges),
+    [outages, mapData.poles, mapData.topology_edges]
+  );
+
+  // One boundary hull per active outage, so the whole planned-maintenance
+  // section reads as a shape even before zooming in on individual poles.
+  const maintenanceOverlays = useMemo(() => {
+    if (outagePoleMap.size === 0 || !mapData.poles.length) return [];
+
+    const byOutage = new Map();
+    for (const [poleId, outage] of outagePoleMap) {
+      if (!byOutage.has(outage.id)) byOutage.set(outage.id, { outage, poleIds: [] });
+      byOutage.get(outage.id).poleIds.push(poleId);
+    }
+
+    return [...byOutage.values()].map(({ outage, poleIds }) => {
+      const affected = mapData.poles.filter(p => poleIds.includes(p.id));
+      if (affected.length === 0) return null;
+      return {
+        id: outage.id,
+        reason: outage.reason,
+        positions: affected.map(p => [p.lat, p.lon]),
+      };
+    }).filter(Boolean);
+  }, [outagePoleMap, mapData.poles]);
+
   if (isLoading && mapData.poles.length === 0) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 rounded-xl border border-slate-800">
@@ -144,8 +174,9 @@ export default function MapView({ incidents = [], mapData, isLoading, selectedIn
         preferCanvas={true} 
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.esri.com/">Esri</a> &mdash; Esri, HERE, Garmin, FAO, NOAA, USGS'
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+          maxNativeZoom={16}
           className="map-tiles"
         />
 
@@ -190,19 +221,25 @@ export default function MapView({ incidents = [], mapData, isLoading, selectedIn
           let weight = 0;
           let opacity = 0.6;
 
+          const isUnderMaintenance = outagePoleMap.has(pole.id);
+
           // Dim out if a feeder is selected and this pole doesn't belong to it
           if (activeFeederId && pole.feeder_id !== activeFeederId) {
             color = '#334155';
             opacity = 0.2;
           } else {
             if (pole.state?.status === 'CONFIRMED_DARK') {
-              color = '#ef4444'; // Red
+              color = '#ef4444'; // Red — a real fault always wins over "planned"
               radius = 5;
               weight = 2;
               opacity = 1;
             } else if (pole.state?.status === 'CANDIDATE_DARK') {
               color = '#f59e0b'; // Orange
               opacity = 0.8;
+            } else if (isUnderMaintenance) {
+              color = '#a78bfa'; // Violet — planned outage, not a fault
+              radius = 4;
+              opacity = 0.9;
             }
           }
 
@@ -269,10 +306,25 @@ export default function MapView({ incidents = [], mapData, isLoading, selectedIn
             }}
           />
         ))}
+
+        {/* 6. Render Scheduled Maintenance boundaries — planned, not a fault */}
+        {maintenanceOverlays.map(overlay => (
+          <Polygon
+            key={`maintenance-${overlay.id}`}
+            positions={overlay.positions}
+            pathOptions={{
+              color: '#a78bfa',
+              fillColor: '#a78bfa',
+              fillOpacity: 0.12,
+              weight: 2,
+              dashArray: '3, 7'
+            }}
+          />
+        ))}
       </MapContainer>
 
       {/* Floating Interactive Control Panel */}
-      <div className="absolute top-4 left-4 z-[1000] w-72 glass-panel rounded-xl shadow-2xl flex flex-col max-h-[calc(100%-2rem)] overflow-hidden">
+      <div className="absolute top-4 left-4 z-[1000] w-72 max-w-[calc(100%-2rem)] glass-panel rounded-xl shadow-2xl flex flex-col max-h-[calc(100%-2rem)] overflow-hidden">
         
         {/* Header / Stats */}
         <div className="p-4 border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-md">
@@ -300,6 +352,20 @@ export default function MapView({ incidents = [], mapData, isLoading, selectedIn
             </div>
           </div>
         </div>
+
+        {/* Active Scheduled Maintenance — planned, informational only (no ticket/incident) */}
+        {maintenanceOverlays.length > 0 && (
+          <div className="p-3 bg-violet-500/10 border-b border-violet-500/20 space-y-1.5">
+            <div className="flex items-center gap-2 text-xs font-semibold text-violet-300">
+              <Wrench className="w-3.5 h-3.5" />
+              {maintenanceOverlays.length} Active Maintenance {maintenanceOverlays.length > 1 ? 'Zones' : 'Zone'}
+              <span className="ml-auto font-mono text-violet-400">{outagePoleMap.size} poles</span>
+            </div>
+            {maintenanceOverlays.slice(0, 3).map(o => (
+              <div key={o.id} className="text-[11px] text-violet-200/70 truncate pl-5">{o.reason}</div>
+            ))}
+          </div>
+        )}
 
         {/* View Toggles */}
         <div className="p-3 bg-slate-900/60 border-b border-slate-700/50 space-y-2 text-sm text-slate-300">

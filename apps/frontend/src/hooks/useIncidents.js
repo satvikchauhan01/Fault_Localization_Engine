@@ -21,8 +21,9 @@ export function useIncidents(pollingIntervalMs = 3000) {
         if (isMounted) {
           setIncidents(data);
           setError(null);
-          // Only clear loading state after the first successful fetch
-          if (isLoading) setIsLoading(false);
+          // setIsLoading(false) is idempotent once already false, so it's safe
+          // to call unconditionally without reading `isLoading` in this closure
+          setIsLoading(false);
         }
       } catch (err) {
         if (err.name === 'AbortError') {
@@ -32,7 +33,7 @@ export function useIncidents(pollingIntervalMs = 3000) {
         if (isMounted) {
           console.error("Failed to fetch incidents:", err);
           setError(err.message || 'Failed to connect to backend.');
-          if (isLoading) setIsLoading(false);
+          setIsLoading(false);
         }
       }
     }

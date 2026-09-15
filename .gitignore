@@ -28,3 +28,7 @@ pnpm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local debug/dev artifacts
+tree_output.txt
+tunnel.out

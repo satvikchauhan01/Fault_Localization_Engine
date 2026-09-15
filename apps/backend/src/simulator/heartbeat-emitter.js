@@ -12,20 +12,6 @@
  *   device.last_seen and declares a device CONFIRMED_DARK after >32 minutes.
  *   Without this emitter, all seeded devices go dark ~32 minutes after
  *   seeding because the seed sets last_seen once and nothing refreshes it.
-/**
- * @file heartbeat-emitter.js
- *
- * Simulator Heartbeat Emitter
- *
- * Periodically emits heartbeat(energized=true) telemetry through the real
- * /telemetry endpoint for every healthy, powered, monitored device.
- *
- * PURPOSE:
- *   In a real deployment, devices send a heartbeat every ~15 minutes.
- *   The sweeper heartbeat-timeout scan (Section H Rule 4) reads
- *   device.last_seen and declares a device CONFIRMED_DARK after >32 minutes.
- *   Without this emitter, all seeded devices go dark ~32 minutes after
- *   seeding because the seed sets last_seen once and nothing refreshes it.
  *
  * SPEC JUSTIFICATION:
  *   Section J Step 3: fw<1.2 -> never sends, just stops heartbeating.
@@ -33,15 +19,17 @@
  *   simulates that behaviour faithfully.
  *
  * RULES:
- *   1. Devices under an active (unrepaired) SimulatorFault are skipped.
- *   2. Does NOT write to PoleState or Device directly -- everything flows
+ *   1. Only fw>=1.3 devices are emitted (fw<1.3 never heartbeat by design).
+ *   2. Devices under an active (unrepaired) SimulatorFault are skipped.
+ *   3. Does NOT write to PoleState or Device directly -- everything flows
  *      through /telemetry -> ingestion worker -> device.last_seen update.
- *   3. Background process only, NOT a UI toggle (Section J Step 5 scope cut).
+ *   4. Background process only, NOT a UI toggle (Section J Step 5 scope cut).
  *
  * INTERVAL: 10 min (simulator-private constant, not a domain threshold).
  */
 
 import { PrismaClient } from '@prisma/client';
+import { isFwLegacy } from './noise.js';
 
 const prisma = new PrismaClient();
 
@@ -109,11 +97,11 @@ export async function getAffectedPoleIds(faultType, targetId, db) {
 }
 
 /**
- * Emits one round of healthy heartbeats for all powered devices.
+ * Emits one round of healthy heartbeats for all powered fw>=1.3 devices.
  *
  * @param {string} telemetryBaseUrl  Backend base URL
  * @param {import('@prisma/client').PrismaClient} [db]  Optional client for testing
- * @returns {Promise<{ emitted: number, skippedFault: number }>}
+ * @returns {Promise<{ emitted: number, skippedFault: number, skippedLegacy: number }>}
  */
 export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
   const p = db || prisma;
@@ -130,17 +118,24 @@ export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
   const seqBase = Date.now() % 2_000_000_000;
   let emitted = 0;
   let skippedFault = 0;
+  let skippedLegacy = 0;
 
   for (let i = 0; i < devices.length; i++) {
     const device = devices[i];
 
-    // Rule 1: Skip devices physically dark under an active fault.
+    // Rule 1: Skip fw<1.3 (never heartbeat by design).
+    if (isFwLegacy(device.fw_version)) {
+      skippedLegacy++;
+      continue;
+    }
+
+    // Rule 2: Skip devices physically dark under an active fault.
     if (device.pole_id && darkPoleIds.has(device.pole_id)) {
       skippedFault++;
       continue;
     }
 
-    // Rule 2: Emit via the real /telemetry endpoint (not a direct DB write).
+    // Rule 3: Emit via the real /telemetry endpoint (not a direct DB write).
     const now = new Date().toISOString();
     const payload = {
       device_id: device.id,
@@ -173,7 +168,7 @@ export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
     }
   }
 
-  return { emitted, skippedFault };
+  return { emitted, skippedFault, skippedLegacy };
 }
 
 /**
@@ -200,10 +195,11 @@ export function startHeartbeatEmitter(telemetryBaseUrl, options = {}) {
 
   const runOnce = () => {
     emitHealthyHeartbeats(telemetryBaseUrl)
-      .then(({ emitted, skippedFault }) => {
+      .then(({ emitted, skippedFault, skippedLegacy }) => {
         console.log(
           '[heartbeat-emitter] Emitted: ' + emitted +
-          ' | Skipped (fault): ' + skippedFault
+          ' | Skipped (fault): ' + skippedFault +
+          ' | Skipped (legacy fw): ' + skippedLegacy
         );
       })
       .catch((err) => console.error('[heartbeat-emitter] Error during emit:', err));

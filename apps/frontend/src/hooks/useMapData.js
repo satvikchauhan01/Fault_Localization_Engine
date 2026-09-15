@@ -67,7 +67,7 @@ export function useMapData(pollingIntervalMs = 5000) {
         const { pole_states } = await res.json();
         if (!isMounted) return;
 
-        setMapData(prev => {
+        setMapData(() => {
           const merged = mergeTopologyAndState(topologyRef.current, pole_states);
           // Stash the latest state snapshot so topology re-merges correctly
           merged._stateSnapshot = pole_states;
