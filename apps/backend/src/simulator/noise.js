@@ -47,21 +47,7 @@ export function applyNoiseToPayloads(payloads, options = {}) {
   return result;
 }
 
-/**
- * Checks if firmware version is legacy (< 1.3.0) using semantic version comparison.
- *
- * @param {string} fwStr Firmware version string (e.g. '1.2.1', '1.10.0')
- * @returns {boolean} True if fw < 1.3
- */
-export function isFwLegacy(fwStr) {
-  if (!fwStr || typeof fwStr !== 'string') return false;
-  const parts = fwStr.split('.').map(p => parseInt(p, 10) || 0);
-  const major = parts[0] || 0;
-  const minor = parts[1] || 0;
-  if (major < 1) return true;
-  if (major === 1 && minor < 3) return true;
-  return false;
-}
+export { isLegacyFirmware as isFwLegacy } from '../../../../packages/domain/src/thresholds.js';
 
 /**
  * Deterministically computes whether a device's dying power_lost message is lost

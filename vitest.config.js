@@ -12,6 +12,9 @@ export default defineConfig(({ mode }) => {
       globals: true,
       environment: 'node',
       fileParallelism: false,
+      // Child processes, not worker threads: Prisma's native query engine
+      // intermittently segfaults inside vitest threads on Windows.
+      pool: 'forks',
       include: ['**/*.test.js'],
       exclude: ['**/node_modules/**', '**/dist/**'],
       env,

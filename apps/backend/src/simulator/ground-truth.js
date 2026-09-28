@@ -24,6 +24,7 @@
 import { prisma as defaultPrisma } from '../db.js';
 import { randomUUID } from 'crypto';
 import { applyNoiseToPayloads, isFwLegacy, isDyingMessageLost } from './noise.js';
+import { nextSimulatorSeq } from './seq.js';
 
 /**
  * Returns the set of poles whose physical power is interrupted by the given fault.
@@ -109,20 +110,18 @@ export async function getPolesForFault(faultType, targetId, prismaClient) {
  * @param {import('@prisma/client').Pole} pole
  * @param {import('@prisma/client').Device} device
  * @param {'power_lost'|'power_restored'} event
- * @param {number} [seq] Sequence number (defaults to Date.now())
+ * @param {number} [seq] Sequence number (defaults to a fresh simulator seq)
  * @returns {object} Telemetry payload
  */
-export function buildTelemetryPayload(pole, device, event, seq) {
+export function buildTelemetryPayload(pole, device, event, seq = nextSimulatorSeq()) {
   const now = new Date().toISOString();
-  // Postgres `Int` is 32-bit signed. Cap seq to safe range.
-  const safeSeq = seq !== undefined ? (seq % 2_147_483_647) : (Date.now() % 2_147_483_647);
   return {
     device_id: device.id,
     pole_id: pole.id,
     event,
     energized: event === 'power_restored',
     device_ts: now,
-    seq: safeSeq,
+    seq,
     battery_mv: 3700,
     rssi: -72,
     fw: device.fw_version,
@@ -166,7 +165,18 @@ export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaC
   });
   const deviceByPoleId = new Map(devices.map(d => [d.pole_id, d]));
 
-  const seqBase = Date.now() % 2_000_000_000; // keep well within int32 range
+  // Record the fault before any telemetry goes out, so a heartbeat round that
+  // runs mid-injection already skips these devices instead of re-energizing them.
+  const faultId = randomUUID();
+  await db.simulatorFault.create({
+    data: {
+      id: faultId,
+      type: faultType,
+      target: targetId,
+    }
+  });
+
+  const seq = nextSimulatorSeq();
   const basePayloads = [];
 
   for (let i = 0; i < affectedPoles.length; i++) {
@@ -189,7 +199,7 @@ export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaC
       continue;
     }
 
-    const payload = buildTelemetryPayload(pole, device, 'power_lost', seqBase + i);
+    const payload = buildTelemetryPayload(pole, device, 'power_lost', seq);
     basePayloads.push(payload);
   }
 
@@ -209,16 +219,6 @@ export async function injectFault(faultType, targetId, telemetryBaseUrl, prismaC
     }
     telemetrySent++;
   }
-
-  // Record fault in SimulatorFault
-  const faultId = randomUUID();
-  await db.simulatorFault.create({
-    data: {
-      id: faultId,
-      type: faultType,
-      target: targetId,
-    }
-  });
 
   return {
     faultId,
@@ -282,7 +282,7 @@ export async function repairFault(faultId, telemetryBaseUrl, prismaClient) {
 
   let telemetrySent = 0;
   const skippedStillDark = [];
-  const seqBase = Date.now() % 2_000_000_000;
+  const seq = nextSimulatorSeq();
 
   for (let i = 0; i < affectedPoles.length; i++) {
     const pole = affectedPoles[i];
@@ -295,7 +295,7 @@ export async function repairFault(faultId, telemetryBaseUrl, prismaClient) {
       continue;
     }
 
-    const payload = buildTelemetryPayload(pole, device, 'power_restored', seqBase + i);
+    const payload = buildTelemetryPayload(pole, device, 'power_restored', seq);
 
     const resp = await fetch(`${telemetryBaseUrl}/telemetry`, {
       method: 'POST',

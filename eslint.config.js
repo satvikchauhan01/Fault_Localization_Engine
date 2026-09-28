@@ -44,6 +44,7 @@ export default [
         XMLHttpRequest: 'readonly',
         alert: 'readonly',
         confirm: 'readonly',
+        ResizeObserver: 'readonly',
         describe: 'readonly',
         it: 'readonly',
         expect: 'readonly',

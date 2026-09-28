@@ -403,3 +403,80 @@ describe('Step 15 — DT/feeder rollup test matrix', () => {
 });
 
 
+
+describe('Legacy firmware (fw < 1.3) in the rollup ratio', () => {
+  const FAULT_T = 1_000_000;
+  const BEFORE_FAULT = FAULT_T - 5 * 60 * 1000; // last routine heartbeat
+
+  /** entries: [id, status|null, fw_version|null, last_confirmed_at] */
+  function build(entries) {
+    const states = new Map();
+    const poles = new Map();
+    for (const [id, status, fw, t] of entries) {
+      poles.set(id, { device_id: `dev-${id}`, fw_version: fw });
+      if (status) states.set(id, { status, last_confirmed_at: t });
+    }
+    return { ids: entries.map((e) => e[0]), states, poles };
+  }
+
+  it('leaves non-dark legacy poles out of the ratio, like unmonitored poles', () => {
+    // 8 of 8 rapid-capable poles dark; the 2 legacy ones cannot report loss yet.
+    const { ids, states, poles } = build([
+      ...makePoles(8).map((id) => [id, 'CONFIRMED_DARK', '1.3.2', FAULT_T]),
+      ['p9', 'LIVE', '1.2.4', BEFORE_FAULT],
+      ['p10', 'LIVE', '1.2.4', BEFORE_FAULT],
+    ]);
+
+    const result = evaluateDtRollup('dt-1', ids, states, poles);
+    expect(result).not.toBeNull();
+    expect(result.monitored_count).toBe(8);
+    expect(result.dark_ratio).toBe(1.0);
+  });
+
+  it('still lets a legacy pole heard after the fault started veto the rollup', () => {
+    const { ids, states, poles } = build([
+      ...makePoles(9).map((id) => [id, 'CONFIRMED_DARK', '1.3.2', FAULT_T]),
+      ['p10', 'LIVE', '1.2.4', FAULT_T + 30_000],
+    ]);
+
+    expect(evaluateDtRollup('dt-1', ids, states, poles)).toBeNull();
+  });
+
+  it('does not treat unknown firmware as legacy', () => {
+    // 8 dark, 2 LIVE with no fw_version: they stay in the denominator (8/10).
+    const { ids, states, poles } = build([
+      ...makePoles(8).map((id) => [id, 'CONFIRMED_DARK', '1.3.2', FAULT_T]),
+      ['p9', 'LIVE', null, BEFORE_FAULT],
+      ['p10', 'LIVE', null, BEFORE_FAULT],
+    ]);
+
+    expect(evaluateDtRollup('dt-1', ids, states, poles)).toBeNull();
+  });
+
+  it('counts a legacy pole that is already dark (timed out) in both sides', () => {
+    const { ids, states, poles } = build([
+      ...makePoles(9).map((id) => [id, 'CONFIRMED_DARK', '1.3.2', FAULT_T]),
+      ['p10', 'CONFIRMED_DARK', '1.2.4', FAULT_T],
+    ]);
+
+    const result = evaluateDtRollup('dt-1', ids, states, poles);
+    expect(result.monitored_count).toBe(10);
+    expect(result.dark_count).toBe(10);
+  });
+
+  it('applies the same exclusion to the feeder rollup', () => {
+    const aIds = makePoles(5, 'a');
+    const bIds = makePoles(5, 'b');
+    const { states, poles } = build([
+      ...aIds.map((id) => [id, 'CONFIRMED_DARK', '1.3.2', FAULT_T]),
+      ...bIds.slice(0, 3).map((id) => [id, 'CONFIRMED_DARK', '1.3.2', FAULT_T]),
+      ...bIds.slice(3).map((id) => [id, 'LIVE', '1.2.4', BEFORE_FAULT]),
+    ]);
+    const dtPoleMap = new Map([['dt-a', aIds], ['dt-b', bIds]]);
+
+    // 8 dark of 10 monitored would be 80%; excluding the 2 silent legacy poles it is 8/8.
+    const { feederRollup } = evaluateFeederRollup('feeder-1', ['dt-a', 'dt-b'], dtPoleMap, states, poles);
+    expect(feederRollup).not.toBeNull();
+    expect(feederRollup.monitored_count).toBe(8);
+  });
+});

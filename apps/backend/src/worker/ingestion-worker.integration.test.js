@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { PrismaClient } from '@prisma/client';
-import { processNextTelemetryEvent } from './ingestion-worker.js';
+import { processNextTelemetryEvent, relocalizeRestoredDts } from './ingestion-worker.js';
 
 const prisma = new PrismaClient();
 
@@ -235,4 +235,32 @@ describe('Ingestion Worker Integration Tests', () => {
     expect(p3.evidence_type).toBe('boot');
   });
 
+it('re-localizes a partial restore once per pass, refining the fault to what is still dark', async () => {
+    await relocalizeRestoredDts(); // drain marks left by earlier tests
+    const older = new Date(Date.now() - 100000); // past the debounce, confirmed inline
+    await enqueue([
+      { device_id: 'd2', pole_id: 'p2', event: 'power_lost', energized: false, seq: 30, device_ts: older, fw: '1.3.0', server_received_at: older },
+      { device_id: 'd3', pole_id: 'p3', event: 'power_lost', energized: false, seq: 31, device_ts: older, fw: '1.3.0', server_received_at: older },
+    ]);
+    while (await processNextTelemetryEvent());
+
+    const [before] = await prisma.incident.findMany();
+    expect(before.upstream_live_pole_id).toBe('p1');
+
+    // The crew fixes the p1-p2 span; p3 is still out behind a second break.
+    const now = new Date();
+    await enqueue([{ device_id: 'd2', pole_id: 'p2', event: 'power_restored', energized: true, seq: 40, device_ts: now, fw: '1.3.0', server_received_at: now }]);
+    await processNextTelemetryEvent();
+
+    const [unchanged] = await prisma.incident.findMany();
+    expect(unchanged.upstream_live_pole_id).toBe('p1');
+
+    expect(await relocalizeRestoredDts()).toEqual(['dt1']);
+    const incidents = await prisma.incident.findMany();
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0].upstream_live_pole_id).toBe('p2');
+    expect(incidents[0].affected_pole_ids).toEqual(['p3']);
+  });
+
 });
+

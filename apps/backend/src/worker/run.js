@@ -2,7 +2,7 @@
  * @file run.js — Entrypoint for the long-running Ingestion Worker process
  */
 
-import { processNextTelemetryEvent } from './ingestion-worker.js';
+import { processNextTelemetryEvent, relocalizeRestoredDts } from './ingestion-worker.js';
 import { sweepTimeouts } from './sweeper.js';
 import { startHeartbeatEmitter } from '../simulator/heartbeat-emitter.js';
 
@@ -50,10 +50,15 @@ export function startWorker() {
     startup: process.env.HEARTBEAT_EMITTER_STARTUP !== '0',
   });
 
+  let sweepInFlight = false;
   sweeperIntervalId = setInterval(() => {
-    if (!isShuttingDown) {
-      sweepTimeouts().catch(err => console.error('[Worker] Sweeper error:', err));
-    }
+    if (isShuttingDown || sweepInFlight) return;
+    sweepInFlight = true;
+    sweepTimeouts()
+      .catch(err => console.error('[Worker] Sweeper error:', err))
+      .then(() => relocalizeRestoredDts())
+      .catch(err => console.error('[Worker] Re-localization error:', err))
+      .finally(() => { sweepInFlight = false; });
   }, SWEEP_INTERVAL_MS);
 
   verifierIntervalId = setInterval(() => {

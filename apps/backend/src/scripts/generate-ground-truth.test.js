@@ -161,3 +161,74 @@ describe('validateTreeStructure', () => {
     expect(result.valid).toBe(false);
   });
 });
+
+describe('generateGroundTruthNetwork — physical layout', () => {
+  const network = generateGroundTruthNetwork({ seed: SEED });
+  const metres = (a, b) => {
+    const dLat = (a.lat - b.lat) * 111000;
+    const dLon = (a.lon - b.lon) * 111000 * Math.cos((a.lat * Math.PI) / 180);
+    return Math.hypot(dLat, dLon);
+  };
+  const asPoint = ([lat, lon]) => ({ lat, lon });
+
+  it('runs every feeder from the substation through its DTs in order', () => {
+    const substation = network.feeders[0].route[0];
+    for (const feeder of network.feeders) {
+      expect(feeder.substation).toBeTruthy();
+      expect(feeder.route[0]).toEqual(substation);
+      const dts = network.transformers.filter((dt) => dt.feeder_id === feeder.id);
+      dts.forEach((dt, k) => {
+        expect(feeder.route[k + 1]).toEqual([dt.lat, dt.lon]);
+      });
+    }
+  });
+
+  it('keeps every LT span at a realistic pole-to-pole length', () => {
+    const byId = new Map(network.poles.map((p) => [p.id, p]));
+    for (const p of network.poles) {
+      if (!p.parent_pole_id) continue;
+      const span = metres(p, byId.get(p.parent_pole_id));
+      expect(span).toBeGreaterThan(25);
+      expect(span).toBeLessThan(52);
+    }
+  });
+
+  it('puts each DT root pole right beside its transformer', () => {
+    const dtById = new Map(network.transformers.map((dt) => [dt.id, dt]));
+    for (const root of network.poles.filter((p) => p.parent_pole_id === null)) {
+      expect(metres(root, dtById.get(root.dt_id))).toBeLessThan(30);
+    }
+  });
+
+  it('never lets two DTs\' LT networks overlap', () => {
+    const cellM = 20;
+    const cells = new Map();
+    for (const p of network.poles) {
+      const key = `${Math.floor(p.lat * 111000 / cellM)}:${Math.floor(p.lon * 108000 / cellM)}`;
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(p);
+    }
+    for (const p of network.poles) {
+      const cx = Math.floor(p.lat * 111000 / cellM);
+      const cy = Math.floor(p.lon * 108000 / cellM);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const q of cells.get(`${cx + dx}:${cy + dy}`) || []) {
+            if (q.dt_id !== p.dt_id) expect(metres(p, q)).toBeGreaterThanOrEqual(19);
+          }
+        }
+      }
+    }
+  });
+
+  it('places DTs along their feeder at realistic spacing', () => {
+    for (const feeder of network.feeders) {
+      const taps = feeder.route.slice(1, -1).map(asPoint);
+      for (let k = 1; k < taps.length; k++) {
+        const gap = metres(taps[k - 1], taps[k]);
+        expect(gap).toBeGreaterThan(600);
+        expect(gap).toBeLessThan(800);
+      }
+    }
+  });
+});

@@ -4,6 +4,27 @@ import { syncIncidents } from '../localization/incident-sync.js';
 
 const prisma = new PrismaClient();
 
+// DTs where a pole regained supply since the last pass. Re-localized once per
+// pass instead of once per event, so a feeder repair or the heartbeat round
+// after a mass outage (thousands of LIVE transitions) doesn't swamp the worker.
+const restoredDts = new Set();
+
+/**
+ * Re-localizes every DT marked by a restore since the last call, so incidents
+ * refine to whatever is still dark (e.g. a second break further down).
+ */
+export async function relocalizeRestoredDts(db = prisma) {
+  const dtIds = [...restoredDts];
+  restoredDts.clear();
+  for (const dtId of dtIds) {
+    await db.$transaction(async (tx) => {
+      const { incidents } = await runLocalizationForDt(dtId, tx);
+      await syncIncidents(incidents, dtId, tx);
+    }, { timeout: 30_000, maxWait: 30_000 });
+  }
+  return dtIds;
+}
+
 /**
  * Polls the telemetry_inbox for a single pending event, processes it,
  * and updates the pole_state + triggers localization inside a single transaction.
@@ -41,7 +62,6 @@ export async function processNextTelemetryEvent() {
     try {
       // 3. Process the event against PoleState
       const currentState = await tx.poleState.findUnique({ where: { pole_id: eventRecord.pole_id } });
-      const deviceRecord = await tx.device.findFirst({ where: { pole_id: eventRecord.pole_id } });
 
       const eventObj = {
         event: eventRecord.event,
@@ -54,17 +74,12 @@ export async function processNextTelemetryEvent() {
 
       let newState = processEvent(currentState, eventObj);
 
-      // Attempt to immediately resolve debounce if the event is old enough
-      // (This is primarily useful for integration tests or catching up on very stale events)
-      //
-      // The event itself proves the device was seen at server_received_at. Use that
-      // timestamp for timeout evaluation, otherwise a healthy heartbeat arriving
-      // after a stale last_seen can be incorrectly converted to CONFIRMED_DARK.
+      // Resolve the debounce inline if this event is already old enough. The
+      // heartbeat-timeout rule is left to the sweeper (no device passed): an event
+      // proves liveness at server_received_at, and one that sat in the inbox
+      // backlog past the timeout would otherwise darken a healthy pole.
       const now = new Date().getTime();
-      const timeoutDeviceRecord = deviceRecord
-        ? { ...deviceRecord, last_seen: eventRecord.server_received_at }
-        : deviceRecord;
-      const timedOutState = evaluateTimeout(newState, timeoutDeviceRecord, now);
+      const timedOutState = evaluateTimeout(newState, null, now);
       if (timedOutState) {
         newState = timedOutState;
       }
@@ -97,14 +112,21 @@ export async function processNextTelemetryEvent() {
           }
         });
 
-        // 5. Trigger localization for the affected DT
-        const pole = await tx.pole.findUnique({ where: { id: eventRecord.pole_id } });
-        if (pole && pole.dt_id) {
-          const dtId = pole.dt_id;
-          const { incidents } = await runLocalizationForDt(dtId, tx);
-          
-          // 6. Sync incidents
-          await syncIncidents(incidents, dtId, tx);
+        // 5. Localization reads confirmed status only. Skipping candidate-only and
+        // heartbeat events keeps the worker ahead of the debounce during a feeder-wide burst.
+        const statusChanged = !currentState || newState.status !== currentState.status;
+        if (statusChanged) {
+          const pole = await tx.pole.findUnique({ where: { id: eventRecord.pole_id } });
+          if (pole && pole.dt_id) {
+            if (newState.status === 'LIVE') {
+              restoredDts.add(pole.dt_id);
+            } else {
+              const { incidents } = await runLocalizationForDt(pole.dt_id, tx);
+
+              // 6. Sync incidents
+              await syncIncidents(incidents, pole.dt_id, tx);
+            }
+          }
         }
       }
 
@@ -114,10 +136,9 @@ export async function processNextTelemetryEvent() {
       // was demonstrably alive at that moment. The sweeper's heartbeat-timeout
       // scan (Section H Rule 4) reads device.last_seen to detect silence, so
       // keeping it current prevents healthy devices from triggering false timeouts.
-      // This does NOT apply fw-1.2.x special treatment: fw<1.3 devices will
-      // still time out because they stop sending telemetry after a fault (the
-      // simulator never emits healthy heartbeats for them), so last_seen
-      // naturally stops refreshing for them once their telemetry stops.
+      // No fw-1.2.x special treatment is needed here: a healthy fw<1.3 device
+      // heartbeats like any other, and simply goes silent (no power_lost) once
+      // it loses power, so its last_seen stops refreshing and it times out.
       await tx.device.updateMany({
         where: { pole_id: eventRecord.pole_id },
         data: { last_seen: eventRecord.server_received_at },

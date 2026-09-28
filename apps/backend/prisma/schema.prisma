@@ -80,9 +80,12 @@ enum InboxStatus {
 }
 
 model Feeder {
-  id        String   @id
-  name      String?
-  createdAt DateTime @default(now()) @map("created_at")
+  id         String   @id
+  name       String?
+  substation String?
+  // 11 kV trunk as [[lat, lon], ...]: substation first, then each DT tap in order.
+  route      Json?
+  createdAt  DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("feeders")

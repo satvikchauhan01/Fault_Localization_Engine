@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import IncidentList from './components/IncidentList';
 import MapView from './components/MapView';
 import IncidentDetail from './components/IncidentDetail';
+import AssetInspector from './components/AssetInspector';
 import NetworkStatsBar from './components/NetworkStatsBar';
 import NotificationBell from './components/NotificationBell';
 import SimulatorPanel from './pages/SimulatorPanel';
@@ -13,7 +14,9 @@ import { useMapData } from './hooks/useMapData';
 import { useSimulator } from './hooks/useSimulator';
 import { useScheduledOutages } from './hooks/useScheduledOutages';
 import { usePreferences } from './hooks/usePreferences';
-import { Activity, Map, Settings, TestTube, Zap, Calendar, AlertTriangle, Wrench, History, Menu, X as CloseIcon, List as ListIcon } from 'lucide-react';
+import { buildNetworkIndex, locateFault } from './utils/networkModel';
+import { resolveActiveOutagePoles } from './utils/scheduledOutageOverlay';
+import { AlertTriangle, Map, Settings, TestTube, Zap, Calendar, Wrench, History, Menu, X as CloseIcon, List as ListIcon, PanelRight, Crosshair } from 'lucide-react';
 
 function playChime() {
   try {
@@ -29,280 +32,305 @@ function playChime() {
     osc.start();
     osc.stop(ctx.currentTime + 0.4);
   } catch {
-    // Audio unavailable (e.g. autoplay policy) — non-fatal, notification still shows visually.
+    // Audio unavailable (autoplay policy): the visual notification still shows.
   }
 }
 
+const NAV_ITEMS = [
+  { id: 'map', label: 'Network map', icon: Map },
+  { id: 'simulator', label: 'Fault simulator', icon: TestTube },
+  { id: 'outages', label: 'Scheduled outages', icon: Calendar },
+  { id: 'history', label: 'Incident history', icon: History },
+];
+
 export default function App() {
-  const [selectedIncidentId, setSelectedIncidentId] = useState(null);
-  const [showSimulator, setShowSimulator] = useState(false);
-  const [showScheduledOutages, setShowScheduledOutages] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [activeNav, setActiveNav] = useState('map');
+  const [selection, setSelection] = useState(null); // { kind: 'incident'|'pole'|'dt'|'feeder', id, nonce? }
+  const [panel, setPanel] = useState(null); // 'simulator' | 'outages' | 'history' | 'settings'
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [mobileTab, setMobileTab] = useState('list'); // 'list' | 'map' — only relevant below the lg breakpoint
+  const [mobileTab, setMobileTab] = useState('list'); // 'list' | 'map' | 'details', below the lg breakpoint only
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
 
   const { preferences, updatePreference, resetPreferences } = usePreferences();
-
-  // Lift the data fetching up so we can share it with MapView, IncidentList and IncidentDetail
   const { incidents, isLoading: incidentsLoading, error: incidentsError } = useIncidents(preferences.incidentPollMs);
   const { mapData, isLoading: mapLoading } = useMapData(preferences.mapPollMs);
-  // Always poll for active simulator faults — surface a banner if any are unrepaired
   const { faults: activeFaults } = useSimulator(5000);
-  // Lifted here too — ScheduledOutagesPanel and its create form used to each
-  // poll this independently; MapView/NetworkStatsBar also need it now to
-  // show which poles are under an active planned outage.
   const { outages, isLoading: outagesLoading, error: outagesError, createOutage } = useScheduledOutages(15000);
 
-  // --- Auto-guidance UI Polish State ---
-  const [toastMessage, setToastMessage] = useState(null);
-  const [waitingForNewIncident, setWaitingForNewIncident] = useState(false);
-  const prevIncidentCountRef = React.useRef(incidents?.length || 0);
+  const index = useMemo(() => buildNetworkIndex(mapData), [mapData]);
+  const outagePoleMap = useMemo(
+    () => resolveActiveOutagePoles(outages, mapData.poles, mapData.topology_edges),
+    [outages, mapData.poles, mapData.topology_edges]
+  );
 
-  const showAppToast = (message) => {
-    setToastMessage(message);
-    setTimeout(() => setToastMessage(null), 5000);
-  };
+  const select = useCallback((next) => {
+    setSelection(next);
+    if (next) setMobileTab('details');
+  }, []);
 
-  const handleInjectionSuccess = () => {
-    setShowSimulator(false);
-    showAppToast('Fault injected successfully.\nWaiting for telemetry processing...');
-    setWaitingForNewIncident(true);
-  };
+  const locate = useCallback((next) => {
+    setSelection({ ...next, nonce: Date.now() });
+    setMobileTab('map');
+  }, []);
 
-  React.useEffect(() => {
-    if (incidents) {
-      if (incidents.length > prevIncidentCountRef.current) {
-        if (preferences.soundAlerts) playChime();
-        if (waitingForNewIncident && preferences.autoSelectNewIncident) {
-          // We have a new incident! Since backend sorts by newest first, incidents[0] is the new one.
-          setSelectedIncidentId(incidents[0].id);
-          setWaitingForNewIncident(false);
-        }
-      }
-      prevIncidentCountRef.current = incidents.length;
+  const showToast = useCallback((message, action) => {
+    clearTimeout(toastTimer.current);
+    setToast({ message, action });
+    toastTimer.current = setTimeout(() => setToast(null), 7000);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') setSelection(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Announce newly detected faults. Opens the newest one unless the operator is
+  // already looking at something, in which case it only offers to locate it.
+  const seenIncidentIds = useRef(null);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  useEffect(() => {
+    if (incidentsLoading) return;
+    const ids = new Set(incidents.map((i) => i.id));
+    if (seenIncidentIds.current === null) {
+      seenIncidentIds.current = ids;
+      return;
     }
-  }, [incidents, waitingForNewIncident, preferences.soundAlerts, preferences.autoSelectNewIncident]);
+    const fresh = incidents.filter((i) => !seenIncidentIds.current.has(i.id));
+    seenIncidentIds.current = ids;
+    if (fresh.length === 0) return;
+
+    const newest = fresh.reduce((a, b) => (new Date(a.first_detected_at) > new Date(b.first_detected_at) ? a : b));
+    const where = locateFault(newest, index)?.title;
+    if (preferences.soundAlerts) playChime();
+    if (preferences.autoSelectNewIncident && !selectionRef.current) {
+      locate({ kind: 'incident', id: newest.id });
+      showToast(`New ${newest.type} fault detected${where ? `: ${where}` : ''}.`);
+    } else {
+      showToast(`New ${newest.type} fault detected${where ? `: ${where}` : ''}.`, {
+        label: 'Locate',
+        onClick: () => locate({ kind: 'incident', id: newest.id }),
+      });
+    }
+  }, [incidents, incidentsLoading, index, preferences.soundAlerts, preferences.autoSelectNewIncident, locate, showToast]);
+
+  const openPanel = (id) => {
+    setPanel(id === 'map' ? null : id);
+    setMobileSidebarOpen(false);
+  };
+  const activeNav = panel === 'settings' ? null : panel || 'map';
+
+  const selectedIncident = selection?.kind === 'incident' ? incidents.find((i) => i.id === selection.id) : null;
 
   return (
     <div className="flex h-screen w-full bg-slate-950 overflow-hidden text-slate-200">
-      {/* App-level Toast Notification */}
-      {toastMessage && (
-        <div className="fixed bottom-4 right-4 z-[3000] bg-slate-800 border border-slate-700 text-slate-200 px-4 py-3 rounded-lg shadow-2xl flex items-start gap-3">
-          <Activity className="w-5 h-5 text-blue-400 mt-0.5" />
-          <div className="whitespace-pre-line text-sm">{toastMessage}</div>
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-[3000] max-w-sm bg-slate-900 border border-slate-700 text-slate-200 pl-4 pr-2 py-3 rounded-md shadow-2xl flex items-center gap-3">
+          <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+          <div className="text-sm flex-1">{toast.message}</div>
+          {toast.action && (
+            <button
+              onClick={() => { toast.action.onClick(); setToast(null); }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white"
+            >
+              <Crosshair className="w-3.5 h-3.5" /> {toast.action.label}
+            </button>
+          )}
+          <button onClick={() => setToast(null)} className="p-1 text-slate-500 hover:text-slate-200" aria-label="Dismiss">
+            <CloseIcon className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
-      {/* Mobile sidebar backdrop */}
       {mobileSidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
-          onClick={() => setMobileSidebarOpen(false)}
-        />
+        <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileSidebarOpen(false)} />
       )}
 
-      {/* Sidebar Navigation */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-800 flex flex-col transform transition-transform duration-200 ease-in-out
+        className={`fixed inset-y-0 left-0 z-50 w-60 bg-slate-900 border-r border-slate-800 flex flex-col transform transition-transform duration-200 ease-in-out
           ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
           lg:relative lg:translate-x-0 lg:w-52 lg:flex-shrink-0`}
       >
-        {/* Brand */}
-        <div className="h-16 flex items-center gap-3 px-5 border-b border-slate-800 flex-shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center flex-shrink-0">
-            <Zap className="w-5 h-5 text-white" />
+        <div className="h-14 flex items-center gap-2.5 px-4 border-b border-slate-800 flex-shrink-0">
+          <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center flex-shrink-0">
+            <Zap className="w-4 h-4 text-white" />
           </div>
-          <span className="font-bold text-base text-white tracking-tight">KSPDB Engine</span>
-          <button
-            onClick={() => setMobileSidebarOpen(false)}
-            className="ml-auto p-1 text-slate-500 hover:text-slate-200 lg:hidden"
-          >
+          <div className="leading-tight">
+            <div className="font-semibold text-sm text-white">KSPDB</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider">Fault localization</div>
+          </div>
+          <button onClick={() => setMobileSidebarOpen(false)} className="ml-auto p-1 text-slate-500 hover:text-slate-200 lg:hidden" aria-label="Close menu">
             <CloseIcon className="w-5 h-5" />
           </button>
         </div>
 
-        <nav className="flex-1 py-4 flex flex-col gap-1 px-3 overflow-y-auto custom-scrollbar">
-          <button
-            onClick={() => { setActiveNav('map'); setShowSimulator(false); setShowScheduledOutages(false); setMobileSidebarOpen(false); }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeNav === 'map'
-                ? 'bg-blue-500/15 text-blue-400 border border-blue-500/20'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <Map className="w-5 h-5 flex-shrink-0" />
-            Network Map
-            {activeNav === 'map' && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-400"></div>}
-          </button>
-
-          <button
-            onClick={() => { setShowSimulator(true); setShowScheduledOutages(false); setActiveNav('simulator'); setMobileSidebarOpen(false); }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeNav === 'simulator'
-                ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <TestTube className="w-5 h-5 flex-shrink-0" />
-            Simulator
-          </button>
-
-          <button
-            onClick={() => { setShowScheduledOutages(true); setShowSimulator(false); setActiveNav('outages'); setMobileSidebarOpen(false); }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeNav === 'outages'
-                ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/20'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <Calendar className="w-5 h-5 flex-shrink-0" />
-            Scheduled Outages
-          </button>
-
-          <button
-            onClick={() => { setShowHistory(true); setShowSimulator(false); setShowScheduledOutages(false); setActiveNav('history'); setMobileSidebarOpen(false); }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeNav === 'history'
-                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <History className="w-5 h-5 flex-shrink-0" />
-            Incident History
-          </button>
-
-          <div className="mt-auto pt-4 border-t border-slate-800">
+        <nav className="flex-1 py-3 flex flex-col gap-0.5 px-2 overflow-y-auto custom-scrollbar">
+          {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
             <button
-              onClick={() => { setShowSettings(true); setMobileSidebarOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                showSettings
-                  ? 'bg-slate-800 text-slate-200'
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+              key={id}
+              onClick={() => openPanel(id)}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+                activeNav === id ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
               }`}
             >
-              <Settings className="w-5 h-5 flex-shrink-0" />
+              <Icon className="w-4 h-4 flex-shrink-0" />
+              {label}
+            </button>
+          ))}
+          <div className="mt-auto pt-3 border-t border-slate-800">
+            <button
+              onClick={() => { setPanel('settings'); setMobileSidebarOpen(false); }}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+                panel === 'settings' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+              }`}
+            >
+              <Settings className="w-4 h-4 flex-shrink-0" />
               Settings
             </button>
           </div>
         </nav>
       </aside>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-        
-        {/* Header */}
-        <header className="h-16 flex-shrink-0 border-b border-slate-800/80 px-3 sm:px-6 flex items-center justify-between bg-slate-900/80 backdrop-blur-sm gap-2">
+      <div className="flex-1 flex flex-col h-full min-w-0">
+        <header className="h-14 flex-shrink-0 border-b border-slate-800 px-3 sm:px-5 flex items-center justify-between bg-slate-900 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <button
               onClick={() => setMobileSidebarOpen(true)}
-              className="p-2 -ml-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors lg:hidden flex-shrink-0"
+              className="p-2 -ml-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-md lg:hidden flex-shrink-0"
               aria-label="Open menu"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h1 className="text-lg sm:text-xl font-semibold tracking-tight truncate">System Status</h1>
+            <h1 className="text-base font-semibold truncate">{panel === 'history' ? 'Incident history' : 'Network operations'}</h1>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-            {/* Active fault warning badge */}
             {activeFaults && activeFaults.length > 0 && (
               <button
-                onClick={() => { setShowSimulator(true); setActiveNav('simulator'); }}
-                className="flex items-center gap-1.5 text-xs px-2.5 sm:px-3 py-1.5 rounded-full bg-amber-600/20 border border-amber-500/40 text-amber-300 hover:bg-amber-600/30 transition-colors"
+                onClick={() => openPanel('simulator')}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-amber-950/60 border border-amber-800 text-amber-300 hover:bg-amber-900/60"
               >
-                <AlertTriangle className="w-3.5 h-3.5 animate-pulse" />
-                <span className="hidden sm:inline">{activeFaults.length} Active Fault{activeFaults.length > 1 ? 's' : ''}</span>
+                <Wrench className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{activeFaults.length} simulated fault{activeFaults.length > 1 ? 's' : ''} active</span>
                 <span className="sm:hidden">{activeFaults.length}</span>
-                <Wrench className="w-3 h-3 hidden sm:block" />
               </button>
             )}
-
-            <NotificationBell incidents={incidents} onSelectIncident={setSelectedIncidentId} />
-
-            {/* Admin User chip */}
-            <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-2 sm:px-3 py-1.5">
-              <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-blue-500 to-indigo-500 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
-                AD
-              </div>
-              <div className="text-left hidden sm:block">
-                <div className="text-xs font-semibold text-slate-200 leading-none">Admin User</div>
-                <div className="text-[10px] text-slate-500 leading-none mt-0.5 uppercase tracking-wide">Karnataka Electricity Board</div>
+            <NotificationBell incidents={incidents} onSelectIncident={(id) => locate({ kind: 'incident', id })} />
+            <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-md px-2 sm:px-2.5 py-1">
+              <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">AD</div>
+              <div className="text-left hidden sm:block leading-tight">
+                <div className="text-xs font-medium text-slate-200">Admin User</div>
+                <div className="text-[10px] text-slate-500">Control room</div>
               </div>
             </div>
           </div>
         </header>
 
-        {/* Live KPI Strip */}
-        <NetworkStatsBar incidents={incidents} mapData={mapData} outages={outages} isLoading={incidentsLoading || mapLoading} />
+        {panel === 'history' ? (
+          <IncidentHistoryPanel
+            index={index}
+            onShowOnMap={(next) => { setPanel(null); locate(next); }}
+          />
+        ) : (
+          <>
+            <NetworkStatsBar incidents={incidents} mapData={mapData} outages={outages} isLoading={incidentsLoading || mapLoading} />
 
-        {/* Mobile List/Map switch — only meaningful below the lg breakpoint */}
-        <div className="flex-shrink-0 flex lg:hidden border-b border-slate-800/80 bg-slate-900/60">
-          {[
-            { id: 'list', label: 'Incident List', icon: ListIcon },
-            { id: 'map', label: 'Network Map', icon: Map },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setMobileTab(t.id)}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                mobileTab === t.id
-                  ? 'border-blue-500 text-blue-400'
-                  : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <t.icon className="w-4 h-4" />
-              {t.label}
-            </button>
-          ))}
-        </div>
+            <div className="flex-shrink-0 flex lg:hidden border-b border-slate-800 bg-slate-900">
+              {[
+                { id: 'list', label: 'Incidents', icon: ListIcon },
+                { id: 'map', label: 'Map', icon: Map },
+                { id: 'details', label: 'Details', icon: PanelRight, disabled: !selection },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setMobileTab(t.id)}
+                  disabled={t.disabled}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm border-b-2 transition-colors disabled:opacity-40 ${
+                    mobileTab === t.id ? 'border-blue-500 text-blue-300' : 'border-transparent text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  <t.icon className="w-4 h-4" />
+                  {t.label}
+                </button>
+              ))}
+            </div>
 
-        {/* Content Split: List & Map */}
-        <main className="flex-1 flex overflow-hidden">
-          {/* Incident List Side Panel */}
-          <div className={`${mobileTab === 'list' ? 'block' : 'hidden'} lg:block w-full lg:w-96 flex-shrink-0 overflow-y-auto border-r border-slate-800/80 bg-slate-900/40 p-4 z-10 custom-scrollbar`}>
-            <IncidentList
-              incidents={incidents}
-              isLoading={incidentsLoading}
-              error={incidentsError}
-              selectedIncidentId={selectedIncidentId}
-              onSelectIncident={(id) => { setSelectedIncidentId(id); setMobileTab('map'); }}
-            />
-          </div>
+            <main className="flex-1 flex min-h-0">
+              <div className={`${mobileTab === 'list' ? 'flex' : 'hidden'} lg:flex w-full lg:w-80 flex-shrink-0 flex-col border-r border-slate-800 bg-slate-950`}>
+                <IncidentList
+                  incidents={incidents}
+                  index={index}
+                  isLoading={incidentsLoading}
+                  error={incidentsError}
+                  selectedIncidentId={selectedIncident?.id}
+                  onSelectIncident={(id) => select({ kind: 'incident', id })}
+                />
+              </div>
 
-          {/* Map View Main Area */}
-          <div className={`${mobileTab === 'map' ? 'block' : 'hidden'} lg:block flex-1 relative z-0 p-2 sm:p-4`}>
-            <MapView
-              incidents={incidents}
-              mapData={mapData}
-              outages={outages}
-              isLoading={mapLoading}
-              selectedIncidentId={selectedIncidentId}
-              onSelectIncident={setSelectedIncidentId}
-            />
+              <div className={`${mobileTab === 'map' ? 'block' : 'hidden'} lg:block flex-1 min-w-0 p-2`}>
+                <MapView
+                  mapData={mapData}
+                  index={index}
+                  incidents={incidents}
+                  outages={outages}
+                  isLoading={mapLoading}
+                  selection={selection}
+                  onSelect={(next) => (next ? select(next) : setSelection(null))}
+                />
+              </div>
 
-            {/* Floating Incident Detail Panel */}
-            {selectedIncidentId && (
-              <IncidentDetail
-                incidentId={selectedIncidentId}
-                incidents={incidents}
-                mapData={mapData}
-                onClose={() => setSelectedIncidentId(null)}
-              />
-            )}
-          </div>
-        </main>
+              {selection && (
+                <div className={`${mobileTab === 'details' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[380px] flex-shrink-0 flex-col border-l border-slate-800 bg-slate-950`}>
+                  {selection.kind === 'incident' ? (
+                    selectedIncident ? (
+                      <IncidentDetail
+                        incident={selectedIncident}
+                        index={index}
+                        onClose={() => setSelection(null)}
+                        onLocate={() => locate({ kind: 'incident', id: selectedIncident.id })}
+                        onSelect={select}
+                      />
+                    ) : (
+                      <div className="p-6 text-center">
+                        <p className="text-sm text-slate-300">This incident is no longer active.</p>
+                        <p className="text-xs text-slate-500 mt-1">Verified incidents move to Incident history.</p>
+                        <div className="mt-4 flex justify-center gap-2">
+                          <button onClick={() => openPanel('history')} className="px-3 py-1.5 rounded-md text-sm bg-slate-800 hover:bg-slate-700">Open history</button>
+                          <button onClick={() => setSelection(null)} className="px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-slate-200">Close</button>
+                        </div>
+                      </div>
+                    )
+                  ) : (
+                    <AssetInspector
+                      selection={selection}
+                      index={index}
+                      incidents={incidents}
+                      outagePoleMap={outagePoleMap}
+                      onSelect={select}
+                      onClose={() => setSelection(null)}
+                    />
+                  )}
+                </div>
+              )}
+            </main>
+          </>
+        )}
       </div>
-      {showSimulator && (
+
+      {panel === 'simulator' && (
         <SimulatorPanel
-          onClose={() => { setShowSimulator(false); setActiveNav('map'); }}
-          onInjectionSuccess={handleInjectionSuccess}
+          onClose={() => setPanel(null)}
+          onInjectionSuccess={() => {
+            setPanel(null);
+            setSelection(null);
+            showToast('Fault injected. Poles turn amber now and are confirmed dark after the 90 s debounce.');
+          }}
         />
       )}
-      {showScheduledOutages && (
+      {panel === 'outages' && (
         <ScheduledOutagesPanel
-          onClose={() => { setShowScheduledOutages(false); setActiveNav('map'); }}
+          onClose={() => setPanel(null)}
           mapData={mapData}
           outages={outages}
           isLoading={outagesLoading}
@@ -310,14 +338,9 @@ export default function App() {
           createOutage={createOutage}
         />
       )}
-      {showHistory && (
-        <IncidentHistoryPanel
-          onClose={() => { setShowHistory(false); setActiveNav('map'); }}
-        />
-      )}
-      {showSettings && (
+      {panel === 'settings' && (
         <SettingsPanel
-          onClose={() => setShowSettings(false)}
+          onClose={() => setPanel(null)}
           preferences={preferences}
           updatePreference={updatePreference}
           resetPreferences={resetPreferences}

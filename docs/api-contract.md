@@ -50,8 +50,41 @@ Retrieves a specific incident by ID.
 ## 2. Map & Topology API
 Prefix: `/api/map`
 
+The UI fetches `/topology` once and polls `/state`; `/data` is the older
+combined payload, kept for compatibility.
+
+### GET `/api/map/topology`
+The static network. Changes only on reseed.
+
+**Response**
+- `200 OK`:
+```json
+{
+  "feeders": [
+    {
+      "id": "feeder-1",
+      "name": "11 kV Feeder 1",
+      "substation": "Central 66/11 kV Substation",
+      "route": [[12.9716, 77.5946], [12.9790, 77.5980]]
+    }
+  ],
+  "transformers": [ { "id": "dt-1", "feeder_id": "feeder-1", "lat": 12.97, "lon": 77.59, "capacity_kva": 100, "households_served": 40, "topology_source": "RECORDED" } ],
+  "poles": [ { "id": "pole-1", "lat": 12.97, "lon": 77.59, "dt_id": "dt-1", "feeder_id": "feeder-1", "seq_on_line": 1, "parent_pole_id": null, "device_id": "dev-1", "ward": "Ward 2", "pincode": "560002" } ],
+  "topology_edges": [ { "id": "...", "parent_pole_id": "pole-1", "child_pole_id": "pole-2", "source": "AUTHORITATIVE", "weight": 38.2, "ambiguous": false } ],
+  "devices": [ { "id": "dev-1", "pole_id": "pole-1", "fw_version": "1.3.2" } ]
+}
+```
+`route` is the feeder trunk from the substation outward, as `[lat, lon]` pairs.
+It is null for feeders seeded before the `20260927090000_feeder_route` migration.
+
+### GET `/api/map/state`
+Current PoleState rows, one per monitored pole. Small enough to poll.
+
+**Response**
+- `200 OK`: `{ "pole_states": [ { "pole_id": "pole-1", "status": "LIVE", "candidate_dark_since": null, "last_confirmed_at": "...", "last_event_seq": 5170000000, "evidence_type": "...", "evidence_summary": "..." } ] }`
+
 ### GET `/api/map/data`
-Retrieves physical topology, nodes, and live pole states for the map visualization.
+Legacy: topology and pole states in one payload (no `devices`).
 
 **Response**
 - `200 OK`: A consolidated map data payload.
@@ -166,13 +199,20 @@ Injects a fault into the physical ground-truth simulation.
 ```
 
 **Response**
-- `202 Accepted`: `{ "message": "Fault injected", "simulatorFault": { ... } }`
+- `202 Accepted`: `{ "faultId": "<uuid>", "affectedPoles": ["pole-239", ...], "telemetrySent": 24 }`
+- `400 Bad Request`: unknown `type` or missing `target`.
+- `404 Not Found`: target does not exist.
+
+Sensors on firmware below 1.3 send nothing (they only stop heartbeating), and
+unmonitored poles have no sensor, so `telemetrySent` is usually smaller than
+`affectedPoles.length`.
 
 ### POST `/api/simulator/repair/:faultId`
 Repairs an active simulator fault, initiating restoration telemetry.
 
 **Response**
-- `202 Accepted`: `{ "message": "Fault repaired", "simulatorFault": { ... } }`
+- `202 Accepted`: `{ "faultId": "<uuid>", "repairedPoles": [...], "skippedStillDark": [...], "telemetrySent": 24 }`. Poles still covered by another active fault are not re-energized and are left out of `repairedPoles`.
+- `404 Not Found`: unknown fault.
 - `409 Conflict`: Fault already repaired.
 
 ### GET `/api/simulator/faults`

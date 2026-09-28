@@ -268,7 +268,7 @@ export async function runLocalizationForDt(dtId, tx) {
     parentGroups.get(parentId).push(inc);
   }
 
-  for (const [parentId, incs] of parentGroups.entries()) {
+  for (const incs of parentGroups.values()) {
     if (incs.length === 1) {
       groupedFinalIncidents.push(incs[0]);
     } else {
@@ -279,7 +279,13 @@ export async function runLocalizationForDt(dtId, tx) {
       
       const confLevels = { 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1 };
       const lowestConfInc = incs.reduce((a, b) => confLevels[a.confidence] < confLevels[b.confidence] ? a : b);
-      
+
+      // Reasons are objects, so dedupe by code (a Set of objects keeps every copy).
+      const reasonsByCode = new Map();
+      for (const r of incs.flatMap(i => i.confidence_reasons || [])) {
+        reasonsByCode.set(typeof r === 'string' ? r : r.code, r);
+      }
+
       groupedFinalIncidents.push({
         ...incs[0],
         type: hasRange ? 'RANGE' : 'SPAN',
@@ -287,7 +293,7 @@ export async function runLocalizationForDt(dtId, tx) {
         affected_pole_ids: allAffected,
         affected_count: allAffected.length,
         confidence: lowestConfInc.confidence,
-        confidence_reasons: Array.from(new Set(incs.flatMap(i => i.confidence_reasons || [])))
+        confidence_reasons: [...reasonsByCode.values()]
       });
     }
   }

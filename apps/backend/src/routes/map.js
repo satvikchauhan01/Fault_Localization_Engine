@@ -19,14 +19,15 @@ export default async function mapRoutes(fastify, opts) {
    */
   fastify.get('/topology', async (request, reply) => {
     try {
-      const [feeders, transformers, poles, topologyEdges] = await Promise.all([
+      const [feeders, transformers, poles, topologyEdges, devices] = await Promise.all([
         db.feeder.findMany(),
         db.transformer.findMany(),
         db.pole.findMany(),
         db.topologyEdge.findMany(),
+        db.device.findMany({ select: { id: true, pole_id: true, fw_version: true } }),
       ]);
 
-      return { feeders, transformers, poles, topology_edges: topologyEdges };
+      return { feeders, transformers, poles, topology_edges: topologyEdges, devices };
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: 'Internal Server Error' });

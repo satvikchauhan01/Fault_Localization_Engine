@@ -4,32 +4,33 @@
  * Simulator Heartbeat Emitter
  *
  * Periodically emits heartbeat(energized=true) telemetry through the real
- * /telemetry endpoint for every healthy, powered, monitored fw>=1.3 device.
+ * /telemetry endpoint for every healthy, powered, monitored device.
  *
  * PURPOSE:
- *   In a real deployment, fw>=1.3 devices send a heartbeat every ~15 minutes.
+ *   In a real deployment, devices send a heartbeat every ~15 minutes.
  *   The sweeper heartbeat-timeout scan (Section H Rule 4) reads
  *   device.last_seen and declares a device CONFIRMED_DARK after >32 minutes.
  *   Without this emitter, all seeded devices go dark ~32 minutes after
  *   seeding because the seed sets last_seen once and nothing refreshes it.
  *
  * SPEC JUSTIFICATION:
- *   Section J Step 3: fw<1.2 -> never sends, just stops heartbeating.
- *   By contrast, healthy fw>=1.3 devices actively heartbeat. This emitter
- *   simulates that behaviour faithfully.
+ *   Section J Step 3: fw<1.2 -> never sends [power_lost], just stops
+ *   heartbeating. A healthy fw-1.2.x device heartbeats like any other; the
+ *   firmware difference only shows once it loses power (no dying message,
+ *   which injectFault models). Skipping healthy legacy devices here would
+ *   make every one of them time out into a false CONFIRMED_DARK.
  *
  * RULES:
- *   1. Only fw>=1.3 devices are emitted (fw<1.3 never heartbeat by design).
- *   2. Devices under an active (unrepaired) SimulatorFault are skipped.
- *   3. Does NOT write to PoleState or Device directly -- everything flows
+ *   1. Devices under an active (unrepaired) SimulatorFault are skipped.
+ *   2. Does NOT write to PoleState or Device directly -- everything flows
  *      through /telemetry -> ingestion worker -> device.last_seen update.
- *   4. Background process only, NOT a UI toggle (Section J Step 5 scope cut).
+ *   3. Background process only, NOT a UI toggle (Section J Step 5 scope cut).
  *
  * INTERVAL: 10 min (simulator-private constant, not a domain threshold).
  */
 
 import { PrismaClient } from '@prisma/client';
-import { isFwLegacy } from './noise.js';
+import { nextSimulatorSeq } from './seq.js';
 
 const prisma = new PrismaClient();
 
@@ -97,11 +98,11 @@ export async function getAffectedPoleIds(faultType, targetId, db) {
 }
 
 /**
- * Emits one round of healthy heartbeats for all powered fw>=1.3 devices.
+ * Emits one round of healthy heartbeats for all powered devices.
  *
  * @param {string} telemetryBaseUrl  Backend base URL
  * @param {import('@prisma/client').PrismaClient} [db]  Optional client for testing
- * @returns {Promise<{ emitted: number, skippedFault: number, skippedLegacy: number }>}
+ * @returns {Promise<{ emitted: number, skippedFault: number }>}
  */
 export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
   const p = db || prisma;
@@ -115,27 +116,18 @@ export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
     for (const id of ids) darkPoleIds.add(id);
   }
 
-  const seqBase = Date.now() % 2_000_000_000;
+  const seq = nextSimulatorSeq();
   let emitted = 0;
   let skippedFault = 0;
-  let skippedLegacy = 0;
 
-  for (let i = 0; i < devices.length; i++) {
-    const device = devices[i];
-
-    // Rule 1: Skip fw<1.3 (never heartbeat by design).
-    if (isFwLegacy(device.fw_version)) {
-      skippedLegacy++;
-      continue;
-    }
-
-    // Rule 2: Skip devices physically dark under an active fault.
+  for (const device of devices) {
+    // Rule 1: Skip devices physically dark under an active fault.
     if (device.pole_id && darkPoleIds.has(device.pole_id)) {
       skippedFault++;
       continue;
     }
 
-    // Rule 3: Emit via the real /telemetry endpoint (not a direct DB write).
+    // Rule 2: Emit via the real /telemetry endpoint (not a direct DB write).
     const now = new Date().toISOString();
     const payload = {
       device_id: device.id,
@@ -143,7 +135,7 @@ export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
       event: 'heartbeat',
       energized: true,
       device_ts: now,
-      seq: (seqBase + i) % 2_147_483_647,
+      seq,
       battery_mv: 3700,
       rssi: -72,
       fw: device.fw_version,
@@ -168,7 +160,7 @@ export async function emitHealthyHeartbeats(telemetryBaseUrl, db) {
     }
   }
 
-  return { emitted, skippedFault, skippedLegacy };
+  return { emitted, skippedFault };
 }
 
 /**
@@ -195,11 +187,10 @@ export function startHeartbeatEmitter(telemetryBaseUrl, options = {}) {
 
   const runOnce = () => {
     emitHealthyHeartbeats(telemetryBaseUrl)
-      .then(({ emitted, skippedFault, skippedLegacy }) => {
+      .then(({ emitted, skippedFault }) => {
         console.log(
           '[heartbeat-emitter] Emitted: ' + emitted +
-          ' | Skipped (fault): ' + skippedFault +
-          ' | Skipped (legacy fw): ' + skippedLegacy
+          ' | Skipped (fault): ' + skippedFault
         );
       })
       .catch((err) => console.error('[heartbeat-emitter] Error during emit:', err));

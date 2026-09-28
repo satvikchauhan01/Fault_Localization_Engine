@@ -12,7 +12,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        // IPv4 on purpose: Node resolves "localhost" to ::1 first, and on Windows a
+        // WSL relay can hold [::1]:3000 while Docker publishes the backend on IPv4.
+        target: 'http://127.0.0.1:3000',
         changeOrigin: true,
       },
     },

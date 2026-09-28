@@ -134,7 +134,7 @@ Schema: `apps/backend/prisma/schema.prisma`
 
 | Table | Purpose |
 |---|---|
-| `feeders` | Top-level grid subdivision (11 kV feeder) |
+| `feeders` | 11 kV feeder. `substation` names its source; `route` is the trunk as `[[lat, lon], ...]` from the substation outward (drawn on the map, used to pin FEEDER faults). |
 | `transformers` | Distribution transformers (DT). `topology_source`: `RECORDED` or `MISSING`. |
 | `poles` | Individual poles under a DT. `device_id` is null for ~9% unmonitored poles. |
 | `devices` | IoT sensors. `last_seen` is the heartbeat timeout anchor. |
@@ -200,18 +200,28 @@ Runs in its own container. The main loop (in `run.js`) calls
 `processNextTelemetryEvent()` continuously: 10 ms poll interval when the queue
 has items; 1 s idle interval when empty.
 
-**Per-event processing — all steps in a single Postgres transaction:**
+**Per-event processing, all steps in a single Postgres transaction:**
 
-1. `SELECT id FROM telemetry_inbox WHERE status='PENDING' ORDER BY server_received_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`
-   Claims one row atomically. Concurrent workers cannot claim the same row.
-2. Fetch full row + current PoleState + Device record for the pole.
-3. Call `processEvent(currentState, event)` — pure function, no I/O.
-4. Call `evaluateTimeout(newState, device, now)` — may immediately confirm dark if stale.
-5. Upsert `PoleState` if state changed.
-6. If the pole's DT is known: call `runLocalizationForDt(dtId, tx)`.
-7. Call `syncIncidents(incidents, dtId, tx)` to persist/update incidents.
-8. Update `device.last_seen` to the event's `server_received_at`.
-9. Mark inbox row `PROCESSED`.
+1. Claim one row with `FOR UPDATE SKIP LOCKED`, ordered `power_lost` first,
+   then `power_restored`, then everything else, oldest first within each. A
+   feeder-wide burst of alarms is therefore processed ahead of routine heartbeats.
+2. Fetch the full row and the pole's current PoleState.
+3. Call `processEvent(currentState, event)`: pure function, no I/O.
+4. Call `evaluateTimeout(newState, null, now)`: resolves the 90 s debounce
+   inline if it has already elapsed. No device is passed, so the heartbeat-timeout
+   rule is left to the sweeper: an event proves liveness at its
+   `server_received_at`, and one that sat in an inbox backlog must not darken a
+   healthy pole.
+5. Upsert `PoleState` if anything changed.
+6. Only if the **status** changed and the pole has a DT:
+   - to a dark status: `runLocalizationForDt(dtId, tx)` then `syncIncidents(...)`;
+   - to `LIVE`: the DT is added to an in-memory set and re-localized once after
+     the next sweep (`relocalizeRestoredDts()` in `run.js`). A feeder repair
+     produces hundreds of LIVE transitions; re-localizing per event would stall
+     the queue.
+   Candidate-only changes and plain heartbeats never trigger localization.
+7. Update `device.last_seen` to the event's `server_received_at`.
+8. Mark the inbox row `PROCESSED`.
 
 If the transaction throws, it rolls back. The row stays `PENDING` and is
 retried on the next poll. The `SIMULATE_CRASH=1` env var triggers a deliberate
@@ -221,18 +231,26 @@ crash mid-transaction for crash-recovery integration tests.
 
 File: `apps/backend/src/worker/sweeper.js`
 
-Runs every **5 seconds** inside the worker process. Two checks:
+Runs every **5 seconds** inside the worker process; a new sweep is skipped
+while the previous one (plus the restored-DT re-localization that follows it)
+is still running. Two checks, both batched:
 
-1. **Debounce completion**: Finds all PoleState rows with `status=LIVE` and
-   `candidate_dark_since IS NOT NULL`. Calls `evaluateTimeout()` — if 90 s has
-   elapsed, transitions to `CONFIRMED_DARK`.
+1. **Debounce completion**: PoleState rows with `status=LIVE` and
+   `candidate_dark_since` set, older than 90 s, become `CONFIRMED_DARK`.
 
-2. **Heartbeat timeout**: Finds all Device rows with
-   `last_seen < now - 32 min`. For poles with `status=LIVE`, calls
-   `evaluateTimeout()` — transitions to `CONFIRMED_DARK`.
+2. **Heartbeat timeout**: devices whose `last_seen` is older than 32 min
+   (`HEARTBEAT_TIMEOUT_MS`) have their LIVE pole confirmed dark.
 
-After state changes, runs `runLocalizationForDt` once per affected DT.
-The sweeper double-checks inside its transaction to guard against races.
+**Listening window.** Silence only counts while the worker was actually
+listening. `listeningSince` is the worker start time, reset whenever two
+sweeps are more than 2 minutes apart (host sleep, container pause). Each
+device's effective last-seen is `max(last_seen, listeningSince)`, so a restart
+or a laptop waking up does not time out the whole network at once.
+
+**Race safety.** Each pole is confirmed with a compare-and-set
+(`updateMany where { status: 'LIVE', candidate_dark_since: <value read> }`),
+so a `power_restored` processed concurrently by the ingestion loop wins. Each
+affected DT is then localized once, not once per pole.
 
 ---
 
@@ -298,10 +316,13 @@ live for the walk.
 
 ### 6.3 DT and Feeder Rollup (rollup.js)
 
-**DT Rollup (Rule 5)**: If >= ROLLUP_THRESHOLD (90%) of *monitored* poles under
-a DT are CONFIRMED_DARK and no LIVE pole exists, emit a single DT_FAULT. The
-90% threshold excludes the ~9% unmonitored poles from both numerator and
-denominator.
+**DT Rollup (Rule 5)**: If >= ROLLUP_THRESHOLD (90%) of *observable* poles under
+a DT are CONFIRMED_DARK and no LIVE pole exists, emit a single DT_FAULT.
+Unmonitored poles are excluded from numerator and denominator. So are poles
+whose sensor runs legacy firmware (< 1.3) and is not yet dark: such sensors
+send no `power_lost`, so for the first 32 minutes of an outage their "LIVE"
+reading proves nothing. Once they time out they count as dark. Unknown
+firmware is treated as modern (`isLegacyFirmware` in `packages/domain`).
 
 **Feeder Rollup (Rule 6)**: Same logic across all DTs on a feeder. If >= 90%
 of feeder-wide monitored poles are dark, emit a FEEDER_FAULT. DT-level
@@ -316,7 +337,10 @@ faults.
 When a frontier edge has an unmonitored endpoint, `expandRangeIncident()`
 walks the topology tree to bound the fault:
 
-- `upstream_live_pole_id`: nearest monitored LIVE ancestor.
+- `upstream_live_pole_id`: nearest monitored LIVE ancestor. When the frontier
+  parent itself is unmonitored, the walk continues upward through unmonitored
+  poles (adding them to the gap) until it reaches a monitored pole; that pole is
+  the bound if LIVE, otherwise the bound is null.
 - `downstream_dark_pole_ids`: first monitored CONFIRMED_DARK descendants.
 - `unmonitored_pole_ids`: all unmonitored poles in the bounded gap.
 - `gap_pole_count`: total poles in the gap.
@@ -332,20 +356,29 @@ The only DB-aware component in the localization engine:
 2. If a feeder ID is available, fetches the full feeder scope for rollup.
 3. Calls `detectFrontier()` then `evaluateDtRollup()` / `evaluateFeederRollup()` then `applyRollup()`.
 4. For each incident: `checkScheduledOutageOverlap()` then `buildConfidenceEvidence()` + `evaluateConfidence()`.
-5. Groups multiple SPAN incidents sharing the same `upstream_live_pole_id` into a single merged incident (lowest confidence wins).
+5. Groups multiple SPAN incidents sharing the same `upstream_live_pole_id` into a single merged incident (lowest confidence wins; reasons are de-duplicated by code).
 6. Returns `{ incidents, sensorSuspects }` — never writes to DB.
 
 ### 6.6 Incident Sync (incident-sync.js)
 
 Idempotently persists localization output:
 
-- For each computed incident, search all active (non-VERIFIED, non-CLOSED) incidents
-  for **pole ID intersection** with the new incident's `affected_pole_ids`.
-- If an overlapping incident exists: update it (merge affected poles into
-  `historical_affected_pole_ids`, update confidence/type, update existing ticket).
-- If no overlap: create a new incident and a new DETECTED ticket.
-- Incidents with no matching computed counterpart are not auto-closed here;
-  that is handled by the restoration verifier.
+- Takes a transaction-scoped Postgres advisory lock first, so the ingestion
+  loop and the sweeper can never create incidents for the same outage in
+  parallel.
+- For each computed incident, finds every active (non-VERIFIED, non-CLOSED)
+  incident whose `affected_pole_ids` intersect it.
+- One overlap: update it in place (type, confidence, poles; previous poles are
+  kept in `historical_affected_pole_ids`).
+- Several overlaps (for example SPAN and DT incidents that escalate into one
+  FEEDER fault as the debounce completes pole by pole): keep one survivor, the
+  incident whose ticket is furthest along the workflow, then the oldest. The
+  others are absorbed into it and **deleted** with their tickets, so a single
+  outage never leaves duplicate or half-finished tickets in history. The
+  survivor keeps the earliest `first_detected_at`.
+- No overlap: create a new incident and a new DETECTED ticket.
+- Incidents with no computed counterpart are not auto-closed here; restoration
+  is handled by the ticket workflow and the restoration verifier.
 
 ---
 
@@ -468,37 +501,58 @@ routes have no dependency on simulator code.
 
 ### Ground-Truth Network Generator (generate-ground-truth.js)
 
-Generates a synthetic ~4,000-pole network in-memory at seed time:
+Generates a ~4,000-pole network (3,990 with the default seed) laid out the way
+an urban distribution network is actually built:
 
-- 5 feeders, multiple DTs per feeder, ~20-30 poles per DT.
-- ~70% of DTs have `topology_source: RECORDED` (authoritative parent links stored).
-- ~30% of DTs have `topology_source: MISSING` (parent_pole_id stripped in registry export).
-- `sim_true_topology` table stores real parent/child for MISSING DTs — used
-  only by the simulator for fault propagation. The localization engine never
-  reads this table.
+- One 66/11 kV substation at the city centre. Five 11 kV feeders leave it
+  radially along gently bending routes (at most 8 degrees per leg); each
+  feeder's trunk is stored as `feeders.route`.
+- 35 DTs, 7 per feeder, tapped onto the route: the first 900 m out, then one
+  every 700 m.
+- Each DT's LT network grows along a street lattice around it (38 m spans,
+  a cross street every 3 spans, about 12% of street segments missing), so poles
+  follow streets instead of scattering. Poles get up to 3 m of GPS jitter and
+  are kept at least 20 m apart from other DTs' poles. About 114 poles per DT.
+- About 9% of poles have no sensor; about 8% of sensors run legacy firmware.
+- About 40% of DTs have `topology_source: RECORDED` (parent links on file);
+  the other 60% are `MISSING` (parent_pole_id stripped in the registry export,
+  wiring inferred by the MST, section 7).
+- `sim_true_topology` stores the real parent/child for MISSING DTs, used only
+  by the simulator for fault propagation. The localization engine never reads
+  this table.
 
 ### Heartbeat Emitter (heartbeat-emitter.js)
 
 Emits `heartbeat(energized=true)` via `POST /telemetry` for every healthy
-device every **10 minutes** (HEARTBEAT_EMIT_INTERVAL_MS). Devices under an
-active SimulatorFault are skipped. All emissions go through the real HTTP
-endpoint — no direct DB writes. This keeps `device.last_seen` fresh,
-preventing the sweeper from timing out healthy poles.
+device every **10 minutes** (HEARTBEAT_EMIT_INTERVAL_MS), legacy-firmware
+devices included: they heartbeat normally while powered and only go silent
+once they lose supply. Devices under an active SimulatorFault are skipped.
+All emissions go through the real HTTP endpoint, never direct DB writes.
 
-### Fault Injection (POST /api/simulator/fault)
+**Sequence numbers** come from `simulator/seq.js`: 100 ms ticks since
+2025-01-01, forced strictly increasing within the process. One seq is used per
+round or burst. (The previous `Date.now() % 2e9` wrapped every ~23 days, after
+which every event was discarded by the seq rule.)
 
-Fault types: SPAN (one pole's subtree), DT (all poles under a transformer),
-FEEDER (all poles on a feeder).
+### Fault Injection (POST /api/simulator/inject)
 
-Injection steps:
-1. Insert SimulatorFault row.
-2. Heartbeat emitter begins skipping affected poles.
-3. Sweeper detects silence after HEARTBEAT_TIMEOUT_MS (32 min) and sets CONFIRMED_DARK.
-4. Localization engine runs per-DT, emits incident + ticket.
+Body: `{ type: 'SPAN' | 'DT' | 'FEEDER', target, duplicates?, reorder? }`.
+SPAN takes a pole and cuts its subtree; DT takes all poles under a
+transformer; FEEDER takes every pole on a feeder.
 
-Fault repair (DELETE /api/simulator/fault/:id): sets repaired_at, emitter
-resumes, power_restored events are posted, restoration verifier auto-verifies
-once all poles return LIVE.
+1. Insert the SimulatorFault row first, so a heartbeat round that runs
+   mid-injection already skips the affected devices.
+2. Post one `power_lost` per affected sensor running firmware >= 1.3 (all with
+   one seq). Legacy sensors stay silent, as real ones do. Optional noise:
+   duplicate resends and out-of-order delivery.
+3. The ingestion worker marks those poles pending; after the 90 s debounce they
+   are CONFIRMED_DARK and the fault is localized. Legacy sensors in the
+   affected area follow later, via the 32-minute heartbeat timeout.
+
+Repair (`POST /api/simulator/repair/:faultId`): sets `repaired_at` and posts
+`power_restored` only for poles that are energized again, meaning poles not
+still covered by another active fault. The ticket still needs an operator to
+mark it repaired; the restoration verifier then confirms it from telemetry.
 
 ---
 
@@ -526,33 +580,76 @@ incident JSON (including pole IDs and coordinates) is sent to Anthropic's API.
 
 ## 12. Frontend
 
-Technology: React (Vite), Leaflet (maps), lucide-react (icons), vanilla CSS.
-Served by nginx; nginx proxies `/api/*` to `http://backend:3000`.
+Technology: React (Vite), Tailwind, react-leaflet (canvas renderer),
+lucide-react (icons). Served by nginx, which proxies `/api/*` to
+`http://backend:3000`; `index.html` is never cached, hashed assets are cached
+for a year.
 
-### Pages
+### Layout
 
-| Page | Nav State | Key Component |
+The Network map view is three panes side by side, so incidents and the map
+never overlap:
+
+| Pane | Component | Content |
 |---|---|---|
-| Network Map | network-map | MapView.jsx — Leaflet map, poles colored by status |
-| Simulator | simulator | SimulatorPanel.jsx — fault injection/repair UI |
-| Scheduled Outages | scheduled-outages | CRUD for maintenance windows |
-| Incident History | history | IncidentHistoryPanel.jsx — verified/closed log |
-| Settings | settings | — |
+| Left (320 px) | `IncidentList.jsx` | Active incidents with search, type/confidence filters, sort |
+| Centre | `MapView.jsx` | The network, fault pins, layer control, collapsible legend |
+| Right (380 px, on selection) | `IncidentDetail.jsx` or `AssetInspector.jsx` | The selected incident, pole, DT or feeder |
+
+Below the `lg` breakpoint the panes become Incidents / Map / Details tabs.
+Escape clears the selection. Incident history, the fault simulator,
+scheduled outages and settings are opened from the sidebar: history replaces
+the main area; the others open as panels over it.
+
+`utils/networkModel.js` builds one index over the topology snapshot
+(`buildNetworkIndex`), shared by map, inspector and incident views.
+
+### Map
+
+- **HT**: each feeder's `route` drawn as a trunk from the substation marker;
+  it turns red while a FEEDER incident is active. Clicking it opens the feeder
+  inspector (source, trunk length, DTs in order from the substation).
+- **DTs**: square markers on the route, filled by the worst condition of
+  their poles. Clicking one opens the DT inspector (pole counts by condition,
+  capacity, wiring source).
+- **LT**: every topology edge, coloured by the condition of the pole it feeds;
+  inferred edges are dashed.
+- **Poles**: all poles from zoom 15; below that, only poles without supply
+  (so a fault is visible from the city-wide view). Clicking one opens the pole
+  inspector (sensor, firmware, last reading, related incidents, including
+  faults it is the live boundary of).
+
+**Fault pinpoint** (`locateFault`):
+
+| Type | Pin | Highlight |
+|---|---|---|
+| SPAN | Midpoint of the span from the live pole to the dark pole (at the live pole when several branches are dark) | The faulted span(s) |
+| RANGE | Centroid of the unmonitored corridor | The corridor, dashed |
+| DT | The transformer | None |
+| FEEDER | The first leg out of the substation | The whole route in red |
+
+A newly detected incident is opened and flown to automatically, unless the
+operator is already looking at something, in which case a toast offers
+"Locate". The toggle is in Settings.
 
 ### Live Update Strategy
 
-The frontend polls `GET /api/map/poles` and `GET /api/incidents` every **5
-seconds**. There is no WebSocket — polling was chosen for simplicity in the
-demo environment.
+Topology (`GET /api/map/topology`) is fetched once. Pole states
+(`GET /api/map/state`) are polled every 5 s and incidents every 3 s, both
+adjustable in Settings. There is no WebSocket; polling was chosen for
+simplicity in the demo environment.
 
-### Pole Colors on Map
+### Pole Colours on Map
 
-| Color | Pole Status |
+| Colour | Condition |
 |---|---|
 | Green | LIVE |
+| Amber | LIVE with `candidate_dark_since` set (losing power, inside the 90 s debounce) |
 | Red | CONFIRMED_DARK |
+| Violet | Covered by an active scheduled outage |
 | Orange | SENSOR_SUSPECT |
-| Gray | STALE / OFFLINE_UNKNOWN / no state recorded |
+| Slate | No recent data (STALE / OFFLINE_UNKNOWN / no state) |
+| Hollow ring | No sensor on the pole |
 
 ---
 

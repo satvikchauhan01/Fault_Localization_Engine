@@ -1,418 +1,428 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, useMap, Polygon, Polyline, Marker } from 'react-leaflet';
-import { divIcon } from 'leaflet';
-import { Layers, Zap, Hexagon, Network, EyeOff, Wrench } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MapContainer, TileLayer, CircleMarker, Polyline, Marker, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { divIcon, latLngBounds } from 'leaflet';
+import { ChevronDown, ChevronUp, Layers, X } from 'lucide-react';
 import { resolveActiveOutagePoles } from '../utils/scheduledOutageOverlay';
+import { CONDITION_COLORS, CONDITION_LABELS, locateFault, poleCondition } from '../utils/networkModel';
 
-// Helper component to center map on selected incident or active feeder
-function MapCenterer({ selectedIncidentId, activeFeederId, incidents, poles }) {
-  const map = useMap();
-  const prevIncidentIdRef = useRef();
-  const prevFeederIdRef = useRef();
+const HT_COLOR = '#3b82f6';
+const LT_LIVE_COLOR = '#64748b';
+const POLES_MIN_ZOOM = 15;
 
-  useEffect(() => {
-    // Fly to incident if selected
-    if (selectedIncidentId && selectedIncidentId !== prevIncidentIdRef.current) {
-      const incident = incidents?.find(i => i.id === selectedIncidentId);
-      if (incident && incident.affected_pole_ids && incident.affected_pole_ids.length > 0) {
-        const affected = poles.filter(p => incident.affected_pole_ids.includes(p.id));
-        if (affected.length > 0) {
-          const lats = affected.map(p => p.lat);
-          const lons = affected.map(p => p.lon);
-          const bounds = [
-            [Math.min(...lats), Math.min(...lons)],
-            [Math.max(...lats), Math.max(...lons)]
-          ];
-          map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 17, duration: 1 });
-        }
-      }
-    } 
-    // Otherwise fly to feeder if selected
-    else if (activeFeederId && activeFeederId !== prevFeederIdRef.current) {
-      const affected = poles.filter(p => p.feeder_id === activeFeederId);
-      if (affected.length > 0) {
-        const lats = affected.map(p => p.lat);
-        const lons = affected.map(p => p.lon);
-        const bounds = [
-          [Math.min(...lats), Math.min(...lons)],
-          [Math.max(...lats), Math.max(...lons)]
-        ];
-        map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1 });
-      }
-    }
+const LEGEND_CONDITIONS = ['live', 'pending', 'dark', 'maintenance', 'unknown', 'unmonitored'];
+const LEGEND_STORAGE_KEY = 'kspdb.mapLegendOpen';
 
-    prevIncidentIdRef.current = selectedIncidentId;
-    prevFeederIdRef.current = activeFeederId;
-  }, [selectedIncidentId, activeFeederId, incidents, poles, map]);
+function loadLegendOpen() {
+  try {
+    return localStorage.getItem(LEGEND_STORAGE_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
 
+function ZoomWatcher({ onZoom }) {
+  useMapEvents({ zoomend: (e) => onZoom(e.target.getZoom()) });
   return null;
 }
 
-export default function MapView({ incidents = [], mapData, outages = [], isLoading, selectedIncidentId, onSelectIncident }) {
-  // UI toggles
-  const [showPoles, setShowPoles] = useState(true);
-  const [showAuthEdges, setShowAuthEdges] = useState(true);
-  const [showInferredEdges, setShowInferredEdges] = useState(true);
-  const [showDTs, setShowDTs] = useState(true);
-  const [activeFeederId, setActiveFeederId] = useState(null);
+function ClearOnMapClick({ onClear }) {
+  useMapEvents({ click: onClear });
+  return null;
+}
 
-  // Pre-compute map for fast edge lookup
-  const poleMap = useMemo(() => {
-    const m = new Map();
-    mapData.poles.forEach(p => m.set(p.id, p));
-    return m;
-  }, [mapData.poles]);
+/**
+ * Fits the whole network once, then flies to each new target (by key; data
+ * refreshes don't re-trigger it). Leaflet computes views from the container's
+ * size, which is 0 while the map tab is hidden on small screens, so every move
+ * waits until the container actually has a size.
+ */
+function ViewController({ fitPoints, target }) {
+  const map = useMap();
+  const fitRef = useRef(fitPoints);
+  fitRef.current = fitPoints;
+  const view = useRef({ fitted: false, lastKey: null, pending: null });
 
-  // Compute edges with coordinates
-  const mappedEdges = useMemo(() => {
-    if (!mapData.topology_edges || poleMap.size === 0) return [];
-    
-    return mapData.topology_edges.map(edge => {
-      const parent = poleMap.get(edge.parent_pole_id);
-      const child = poleMap.get(edge.child_pole_id);
-      if (!parent || !child) return null;
-      
-      return {
-        id: edge.id,
-        positions: [[parent.lat, parent.lon], [child.lat, child.lon]],
-        source: edge.source,
-        feederId: parent.feeder_id
-      };
-    }).filter(Boolean);
-  }, [mapData.topology_edges, poleMap]);
+  const apply = useCallback(() => {
+    map.invalidateSize({ pan: false });
+    const size = map.getSize();
+    if (size.x === 0 || size.y === 0) return;
+    const v = view.current;
+    if (v.pending) {
+      const { points, maxZoom } = v.pending;
+      v.pending = null;
+      v.fitted = true;
+      if (points.length === 1) map.flyTo(points[0], Math.max(map.getZoom(), maxZoom), { duration: 0.8 });
+      else map.flyToBounds(latLngBounds(points), { padding: [48, 48], maxZoom, duration: 0.8 });
+    } else if (!v.fitted && fitRef.current.length > 0) {
+      v.fitted = true;
+      map.fitBounds(latLngBounds(fitRef.current), { padding: [24, 24] });
+    }
+  }, [map]);
 
-  // Count edges for stats
-  const authCount = mappedEdges.filter(e => e.source === 'AUTHORITATIVE').length;
-  const inferredCount = mappedEdges.filter(e => e.source === 'INFERRED').length;
+  useEffect(() => {
+    const observer = new ResizeObserver(apply);
+    observer.observe(map.getContainer());
+    apply();
+    return () => observer.disconnect();
+  }, [map, apply]);
 
-  // Custom icon for Transformers (DTs)
-  const dtIcon = useMemo(() => {
-    return divIcon({
-      className: 'bg-transparent border-0',
-      html: `<div style="width: 14px; height: 14px; background-color: #3b82f6; border: 2px solid #ffffff; box-shadow: 0 0 8px #3b82f6; transform: rotate(45deg);"></div>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7]
-    });
-  }, []);
+  useEffect(() => {
+    if (!target?.points?.length || target.key === view.current.lastKey) return;
+    view.current.lastKey = target.key;
+    view.current.pending = target;
+    apply();
+  }, [target, apply]);
 
-  const highlightedDtIcon = useMemo(() => {
-    return divIcon({
-      className: 'bg-transparent border-0',
-      html: `<div style="width: 18px; height: 18px; background-color: #f59e0b; border: 2px solid #ffffff; box-shadow: 0 0 12px #f59e0b; transform: rotate(45deg); z-index: 1000;"></div>`,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9]
-    });
-  }, []);
+  useEffect(() => { apply(); }, [fitPoints.length, apply]);
+  return null;
+}
 
-  // Compute incident overlay hulls
-  const incidentOverlays = useMemo(() => {
-    if (!incidents.length || !mapData.poles.length) return [];
-    
-    return incidents.map(incident => {
-      const affected = mapData.poles.filter(p => incident.affected_pole_ids?.includes(p.id));
-      if (affected.length === 0) return null;
+const stop = (handler) => (e) => {
+  e.originalEvent?.stopPropagation();
+  handler(e);
+};
 
-      const positions = affected.map(p => [p.lat, p.lon]);
-      
-      return {
-        id: incident.id,
-        type: incident.type,
-        positions,
-        isSelected: selectedIncidentId === incident.id
-      };
-    }).filter(Boolean);
-  }, [incidents, mapData.poles, selectedIncidentId]);
+function squareIcon({ size, fill, border, label = '', ring = false }) {
+  return divIcon({
+    className: '',
+    html: `<div style="width:${size}px;height:${size}px;background:${fill};border:2px solid ${border};border-radius:2px;display:flex;align-items:center;justify-content:center;font:600 9px Inter,sans-serif;color:#0b1120;${ring ? 'box-shadow:0 0 0 3px rgba(255,255,255,.85);' : ''}">${label}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
 
-  // Poles currently inside an active scheduled-outage window — presentation
-  // only, derived client-side; does not touch incidents/tickets/telemetry.
+function faultIcon(selected) {
+  const size = selected ? 30 : 22;
+  return divIcon({
+    className: '',
+    html: `<div class="fault-pin${selected ? ' fault-pin--selected' : ''}" style="width:${size}px;height:${size}px">
+      <svg viewBox="0 0 24 24" width="${size * 0.55}" height="${size * 0.55}" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M13 3 6 13h5l-1 8 7-10h-5l1-8z" fill="#fff" stroke="none"/></svg>
+    </div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+export default function MapView({ mapData, index, incidents = [], outages = [], isLoading, selection, onSelect }) {
+  const [zoom, setZoom] = useState(13);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(loadLegendOpen);
+  const toggleLegend = () => {
+    const next = !legendOpen;
+    setLegendOpen(next);
+    try {
+      localStorage.setItem(LEGEND_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      // Storage unavailable: the choice just won't persist.
+    }
+  };
+  const [layers, setLayers] = useState({ ht: true, lt: true, poles: true, inferredDashed: true });
+  const toggleLayer = (key) => setLayers((l) => ({ ...l, [key]: !l[key] }));
+
   const outagePoleMap = useMemo(
     () => resolveActiveOutagePoles(outages, mapData.poles, mapData.topology_edges),
     [outages, mapData.poles, mapData.topology_edges]
   );
 
-  // One boundary hull per active outage, so the whole planned-maintenance
-  // section reads as a shape even before zooming in on individual poles.
-  const maintenanceOverlays = useMemo(() => {
-    if (outagePoleMap.size === 0 || !mapData.poles.length) return [];
+  const conditionById = useMemo(() => {
+    const m = new Map();
+    for (const p of mapData.poles) m.set(p.id, poleCondition(p, outagePoleMap));
+    return m;
+  }, [mapData.poles, outagePoleMap]);
 
-    const byOutage = new Map();
-    for (const [poleId, outage] of outagePoleMap) {
-      if (!byOutage.has(outage.id)) byOutage.set(outage.id, { outage, poleIds: [] });
-      byOutage.get(outage.id).poleIds.push(poleId);
+  const incidentByPole = useMemo(() => {
+    const m = new Map();
+    for (const inc of incidents) for (const id of inc.affected_pole_ids || []) m.set(id, inc);
+    return m;
+  }, [incidents]);
+
+  const faults = useMemo(
+    () => incidents.map((inc) => ({ incident: inc, loc: locateFault(inc, index) })).filter((f) => f.loc),
+    [incidents, index]
+  );
+
+  const outFeeders = useMemo(
+    () => new Set(faults.filter((f) => f.incident.type === 'FEEDER').map((f) => index.poleById.get(f.incident.affected_pole_ids[0])?.feeder_id)),
+    [faults, index]
+  );
+
+  const edges = useMemo(() => mapData.topology_edges
+    .map((e) => {
+      const parent = index.poleById.get(e.parent_pole_id);
+      const child = index.poleById.get(e.child_pole_id);
+      if (!parent || !child) return null;
+      return { id: e.id, childId: child.id, inferred: e.source === 'INFERRED', positions: [[parent.lat, parent.lon], [child.lat, child.lon]] };
+    })
+    .filter(Boolean), [mapData.topology_edges, index]);
+
+  const dtCondition = useMemo(() => {
+    const m = new Map();
+    for (const dt of mapData.transformers) {
+      const conds = (index.polesByDt.get(dt.id) || []).map((p) => conditionById.get(p.id));
+      m.set(dt.id,
+        conds.includes('dark') ? 'dark'
+          : conds.includes('pending') ? 'pending'
+            : conds.includes('maintenance') ? 'maintenance'
+              : 'live');
     }
+    return m;
+  }, [mapData.transformers, index, conditionById]);
 
-    return [...byOutage.values()].map(({ outage, poleIds }) => {
-      const affected = mapData.poles.filter(p => poleIds.includes(p.id));
-      if (affected.length === 0) return null;
-      return {
-        id: outage.id,
-        reason: outage.reason,
-        positions: affected.map(p => [p.lat, p.lon]),
-      };
-    }).filter(Boolean);
-  }, [outagePoleMap, mapData.poles]);
+  const substation = mapData.feeders.find((f) => f.route?.length)?.route[0];
+
+  const selectedIncident = selection?.kind === 'incident' ? incidents.find((i) => i.id === selection.id) : null;
+  const selectedFault = selectedIncident ? faults.find((f) => f.incident.id === selectedIncident.id) : null;
+
+  const fly = useMemo(() => {
+    if (!selection) return null;
+    if (selection.kind === 'incident' && selectedFault) {
+      return { points: selectedFault.loc.boundsPoints, maxZoom: selectedFault.loc.kind === 'SPAN' ? 18 : 17 };
+    }
+    if (selection.kind === 'pole') {
+      const p = index.poleById.get(selection.id);
+      return p ? { points: [[p.lat, p.lon]], maxZoom: 17 } : null;
+    }
+    if (selection.kind === 'dt') {
+      const pts = (index.polesByDt.get(selection.id) || []).map((p) => [p.lat, p.lon]);
+      return pts.length ? { points: pts, maxZoom: 17 } : null;
+    }
+    if (selection.kind === 'feeder') {
+      const f = index.feederById.get(selection.id);
+      return f?.route ? { points: f.route, maxZoom: 15 } : null;
+    }
+    return null;
+    // Recompute only for a new selection (or an explicit Locate), not for every state poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection?.kind, selection?.id, selection?.nonce, Boolean(selectedFault)]);
+
+  const allRoutePoints = useMemo(() => mapData.feeders.flatMap((f) => f.route || []), [mapData.feeders]);
 
   if (isLoading && mapData.poles.length === 0) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 rounded-xl border border-slate-800">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
-        <p className="text-slate-400 font-medium">Loading network topology...</p>
+      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 rounded-lg border border-slate-800">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mb-3"></div>
+        <p className="text-slate-400 text-sm">Loading network topology...</p>
       </div>
     );
   }
 
-  const center = mapData.transformers.length > 0 
-    ? [mapData.transformers[0].lat, mapData.transformers[0].lon] 
-    : [0, 0];
+  const showAllPoles = layers.poles && zoom >= POLES_MIN_ZOOM;
+  const poleRadius = zoom >= 17 ? 5 : zoom >= 16 ? 4 : zoom >= 15 ? 3 : 2.5;
+  const selectedPole = selection?.kind === 'pole' ? index.poleById.get(selection.id) : null;
 
   return (
-    <div className="w-full h-full rounded-xl overflow-hidden border border-slate-800 relative z-0 shadow-2xl">
-      <MapContainer 
-        center={center} 
-        zoom={14} 
-        className="w-full h-full bg-slate-900"
-        preferCanvas={true} 
-      >
+    <div className="w-full h-full rounded-lg overflow-hidden border border-slate-800 relative">
+      <MapContainer center={substation || [12.9716, 77.5946]} zoom={13} className="w-full h-full bg-slate-950" preferCanvas zoomControl={false}>
         <TileLayer
-          attribution='&copy; <a href="https://www.esri.com/">Esri</a> &mdash; Esri, HERE, Garmin, FAO, NOAA, USGS'
+          attribution='&copy; <a href="https://www.esri.com/">Esri</a>, HERE, Garmin, FAO, NOAA, USGS'
           url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
           maxNativeZoom={16}
-          className="map-tiles"
+          maxZoom={19}
+        />
+        <ZoomWatcher onZoom={setZoom} />
+        <ClearOnMapClick onClear={() => onSelect(null)} />
+        <ViewController
+          fitPoints={allRoutePoints}
+          target={fly ? { key: `${selection.kind}:${selection.id}:${selection.nonce ?? ''}`, points: fly.points, maxZoom: fly.maxZoom } : null}
         />
 
-        <MapCenterer 
-          selectedIncidentId={selectedIncidentId} 
-          activeFeederId={activeFeederId}
-          incidents={incidents} 
-          poles={mapData.poles} 
-        />
-
-        {/* 1. Render INFERRED Edges (60% unverified) */}
-        {showInferredEdges && mappedEdges.filter(e => e.source === 'INFERRED').map(edge => (
-          <Polyline
-            key={edge.id}
-            positions={edge.positions}
-            pathOptions={{
-              color: activeFeederId && edge.feederId !== activeFeederId ? '#334155' : '#64748b',
-              weight: activeFeederId && edge.feederId === activeFeederId ? 3 : 1.5,
-              dashArray: '4, 6',
-              opacity: activeFeederId && edge.feederId !== activeFeederId ? 0.2 : 0.6
-            }}
-          />
-        ))}
-
-        {/* 2. Render AUTHORITATIVE Edges (40% known ground truth) */}
-        {showAuthEdges && mappedEdges.filter(e => e.source === 'AUTHORITATIVE').map(edge => (
-          <Polyline
-            key={edge.id}
-            positions={edge.positions}
-            pathOptions={{
-              color: activeFeederId && edge.feederId !== activeFeederId ? '#1e3a8a' : '#3b82f6',
-              weight: activeFeederId && edge.feederId === activeFeederId ? 4 : 2,
-              opacity: activeFeederId && edge.feederId !== activeFeederId ? 0.3 : 0.9
-            }}
-          />
-        ))}
-
-        {/* 3. Render Poles */}
-        {showPoles && mapData.poles.map(pole => {
-          let color = '#10b981'; // LIVE (Green)
-          let radius = 3;
-          let weight = 0;
-          let opacity = 0.6;
-
-          const isUnderMaintenance = outagePoleMap.has(pole.id);
-
-          // Dim out if a feeder is selected and this pole doesn't belong to it
-          if (activeFeederId && pole.feeder_id !== activeFeederId) {
-            color = '#334155';
-            opacity = 0.2;
-          } else {
-            if (pole.state?.status === 'CONFIRMED_DARK') {
-              color = '#ef4444'; // Red — a real fault always wins over "planned"
-              radius = 5;
-              weight = 2;
-              opacity = 1;
-            } else if (pole.state?.status === 'CANDIDATE_DARK') {
-              color = '#f59e0b'; // Orange
-              opacity = 0.8;
-            } else if (isUnderMaintenance) {
-              color = '#a78bfa'; // Violet — planned outage, not a fault
-              radius = 4;
-              opacity = 0.9;
-            }
-          }
-
-          const isSelected = selectedIncidentId && incidents.find(i => i.id === selectedIncidentId)?.affected_pole_ids?.includes(pole.id);
-          if (isSelected) {
-            radius = 6;
-            weight = 3;
-            color = '#3b82f6'; 
-            opacity = 1;
-          }
-
+        {/* LT lines, coloured by whether the pole they feed has supply */}
+        {layers.lt && edges.map((e) => {
+          const cond = conditionById.get(e.childId);
+          const color = cond === 'dark' ? CONDITION_COLORS.dark
+            : cond === 'pending' ? CONDITION_COLORS.pending
+              : cond === 'maintenance' ? CONDITION_COLORS.maintenance
+                : LT_LIVE_COLOR;
           return (
-            <CircleMarker
-              key={pole.id}
-              center={[pole.lat, pole.lon]}
-              radius={radius}
-              eventHandlers={{
-                click: () => {
-                  const incident = incidents.find(i => i.affected_pole_ids?.includes(pole.id));
-                  if (incident) onSelectIncident(incident.id);
-                }
-              }}
+            <Polyline
+              key={e.id}
+              positions={e.positions}
+              interactive={false}
               pathOptions={{
-                color: color,
-                fillColor: color,
-                fillOpacity: opacity,
-                weight: weight,
-                opacity: opacity
+                color,
+                weight: color === LT_LIVE_COLOR ? 1.2 : 2,
+                opacity: color === LT_LIVE_COLOR ? 0.7 : 0.95,
+                dashArray: layers.inferredDashed && e.inferred ? '3 4' : undefined,
               }}
             />
           );
         })}
 
-        {/* 4. Render Transformers (DTs) */}
-        {showDTs && mapData.transformers.map(dt => {
-          const isHighlighted = activeFeederId === dt.feeder_id;
-          const isDimmed = activeFeederId && !isHighlighted;
-          
-          if (isDimmed) return null; // Hide non-relevant DTs to reduce clutter
+        {/* 11 kV feeder trunks */}
+        {layers.ht && mapData.feeders.map((f) => {
+          if (!f.route?.length) return null;
+          const selected = selection?.kind === 'feeder' && selection.id === f.id;
+          const out = outFeeders.has(f.id);
+          return (
+            <React.Fragment key={f.id}>
+              <Polyline positions={f.route} interactive={false} pathOptions={{ color: '#020617', weight: selected ? 10 : 8, opacity: 0.85 }} />
+              <Polyline
+                positions={f.route}
+                interactive={false}
+                pathOptions={{
+                  color: out ? CONDITION_COLORS.dark : selected ? '#93c5fd' : HT_COLOR,
+                  weight: selected ? 6 : 4,
+                  opacity: 1,
+                }}
+              />
+              {/* Transparent hit line: canvas hit-testing only covers half the stroke width */}
+              <Polyline
+                positions={f.route}
+                pathOptions={{ color: '#000', weight: 18, opacity: 0, bubblingMouseEvents: false }}
+                eventHandlers={{ click: stop(() => onSelect({ kind: 'feeder', id: f.id })) }}
+              >
+                <Tooltip sticky>{f.name || f.id}</Tooltip>
+              </Polyline>
+            </React.Fragment>
+          );
+        })}
 
+        {/* Poles: all of them once zoomed in; only the ones without supply further out */}
+        {layers.poles && mapData.poles.map((p) => {
+          const cond = conditionById.get(p.id);
+          const notable = cond === 'dark' || cond === 'pending' || cond === 'maintenance' || cond === 'suspect';
+          if (!showAllPoles && !notable) return null;
+          const inIncident = incidentByPole.has(p.id);
+          const hollow = cond === 'unmonitored';
+          const color = hollow && inIncident ? CONDITION_COLORS.dark : CONDITION_COLORS[cond];
+          return (
+            <CircleMarker
+              key={p.id}
+              center={[p.lat, p.lon]}
+              radius={showAllPoles ? poleRadius : 2}
+              pathOptions={{
+                color,
+                weight: hollow ? 1.5 : 1,
+                fillColor: color,
+                fillOpacity: hollow ? 0 : 0.95,
+                opacity: 1,
+                bubblingMouseEvents: false,
+              }}
+              eventHandlers={{ click: stop(() => onSelect({ kind: 'pole', id: p.id })) }}
+            />
+          );
+        })}
+
+        {selectedPole && (
+          <CircleMarker center={[selectedPole.lat, selectedPole.lon]} radius={poleRadius + 5} interactive={false} pathOptions={{ color: '#f8fafc', weight: 2, fill: false }} />
+        )}
+
+        {/* Transformers */}
+        {mapData.transformers.map((dt) => {
+          const cond = dtCondition.get(dt.id);
+          const selected = selection?.kind === 'dt' && selection.id === dt.id;
           return (
             <Marker
               key={dt.id}
               position={[dt.lat, dt.lon]}
-              icon={isHighlighted ? highlightedDtIcon : dtIcon}
-            />
+              zIndexOffset={500}
+              icon={squareIcon({
+                size: selected ? 16 : 12,
+                fill: cond === 'live' ? '#1e293b' : CONDITION_COLORS[cond],
+                border: cond === 'live' ? HT_COLOR : '#f8fafc',
+                ring: selected,
+              })}
+              eventHandlers={{ click: stop(() => onSelect({ kind: 'dt', id: dt.id })) }}
+            >
+              <Tooltip direction="top" offset={[0, -8]}>{dt.id}</Tooltip>
+            </Marker>
           );
         })}
 
-        {/* 5. Render Incident Overlays */}
-        {incidentOverlays.map(overlay => (
-          <Polygon
-            key={`overlay-${overlay.id}`}
-            positions={overlay.positions}
-            pathOptions={{
-              color: overlay.isSelected ? '#3b82f6' : '#ef4444',
-              fillColor: overlay.isSelected ? '#3b82f6' : '#ef4444',
-              fillOpacity: overlay.isSelected ? 0.3 : 0.1,
-              weight: overlay.isSelected ? 3 : 1,
-              dashArray: overlay.isSelected ? undefined : '5, 5'
-            }}
-            eventHandlers={{
-              click: () => onSelectIncident(overlay.id)
-            }}
-          />
-        ))}
-
-        {/* 6. Render Scheduled Maintenance boundaries — planned, not a fault */}
-        {maintenanceOverlays.map(overlay => (
-          <Polygon
-            key={`maintenance-${overlay.id}`}
-            positions={overlay.positions}
-            pathOptions={{
-              color: '#a78bfa',
-              fillColor: '#a78bfa',
-              fillOpacity: 0.12,
-              weight: 2,
-              dashArray: '3, 7'
-            }}
-          />
-        ))}
-      </MapContainer>
-
-      {/* Floating Interactive Control Panel */}
-      <div className="absolute top-4 left-4 z-[1000] w-72 max-w-[calc(100%-2rem)] glass-panel rounded-xl shadow-2xl flex flex-col max-h-[calc(100%-2rem)] overflow-hidden">
-        
-        {/* Header / Stats */}
-        <div className="p-4 border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-md">
-          <div className="flex items-center gap-2 mb-2 text-slate-200">
-            <Layers className="w-5 h-5 text-blue-400" />
-            <h3 className="font-semibold">Network Topology</h3>
-          </div>
-          
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="bg-slate-800/60 p-2 rounded border border-slate-700/50">
-              <div className="text-slate-400">Total Poles</div>
-              <div className="font-mono text-slate-200">{mapData.poles.length}</div>
-            </div>
-            <div className="bg-slate-800/60 p-2 rounded border border-slate-700/50">
-              <div className="text-slate-400">Transformers</div>
-              <div className="font-mono text-slate-200">{mapData.transformers.length}</div>
-            </div>
-            <div className="bg-blue-900/20 p-2 rounded border border-blue-500/30">
-              <div className="text-blue-300">Known Edges</div>
-              <div className="font-mono text-blue-400">{authCount} <span className="text-[10px] opacity-70">({Math.round(authCount/(authCount+inferredCount)*100)}%)</span></div>
-            </div>
-            <div className="bg-slate-800/60 p-2 rounded border border-slate-600/50">
-              <div className="text-slate-400">Inferred Edges</div>
-              <div className="font-mono text-slate-300">{inferredCount} <span className="text-[10px] opacity-70">({Math.round(inferredCount/(authCount+inferredCount)*100)}%)</span></div>
-            </div>
-          </div>
-        </div>
-
-        {/* Active Scheduled Maintenance — planned, informational only (no ticket/incident) */}
-        {maintenanceOverlays.length > 0 && (
-          <div className="p-3 bg-violet-500/10 border-b border-violet-500/20 space-y-1.5">
-            <div className="flex items-center gap-2 text-xs font-semibold text-violet-300">
-              <Wrench className="w-3.5 h-3.5" />
-              {maintenanceOverlays.length} Active Maintenance {maintenanceOverlays.length > 1 ? 'Zones' : 'Zone'}
-              <span className="ml-auto font-mono text-violet-400">{outagePoleMap.size} poles</span>
-            </div>
-            {maintenanceOverlays.slice(0, 3).map(o => (
-              <div key={o.id} className="text-[11px] text-violet-200/70 truncate pl-5">{o.reason}</div>
-            ))}
-          </div>
+        {substation && (
+          <Marker position={substation} zIndexOffset={600} icon={squareIcon({ size: 20, fill: '#e2e8f0', border: HT_COLOR, label: 'SS' })}>
+            <Tooltip direction="top" offset={[0, -10]}>{mapData.feeders[0]?.substation || 'Substation'}</Tooltip>
+          </Marker>
         )}
 
-        {/* View Toggles */}
-        <div className="p-3 bg-slate-900/60 border-b border-slate-700/50 space-y-2 text-sm text-slate-300">
-          <label className="flex items-center justify-between cursor-pointer hover:text-white">
-            <span className="flex items-center gap-2"><Hexagon className="w-4 h-4 text-blue-400"/> Transformers (DTs)</span>
-            <input type="checkbox" checked={showDTs} onChange={e => setShowDTs(e.target.checked)} className="accent-blue-500" />
-          </label>
-          <label className="flex items-center justify-between cursor-pointer hover:text-white">
-            <span className="flex items-center gap-2"><Network className="w-4 h-4 text-emerald-400"/> Monitoring Nodes</span>
-            <input type="checkbox" checked={showPoles} onChange={e => setShowPoles(e.target.checked)} className="accent-blue-500" />
-          </label>
-          <label className="flex items-center justify-between cursor-pointer hover:text-white">
-            <span className="flex items-center gap-2"><div className="w-4 h-0.5 bg-blue-500 rounded"></div> Known Wiring</span>
-            <input type="checkbox" checked={showAuthEdges} onChange={e => setShowAuthEdges(e.target.checked)} className="accent-blue-500" />
-          </label>
-          <label className="flex items-center justify-between cursor-pointer hover:text-white">
-            <span className="flex items-center gap-2"><div className="w-4 border-t-2 border-dashed border-slate-500"></div> AI Inferred Wiring</span>
-            <input type="checkbox" checked={showInferredEdges} onChange={e => setShowInferredEdges(e.target.checked)} className="accent-blue-500" />
-          </label>
-        </div>
+        {/* Faulted span or search corridor for the selected incident */}
+        {selectedFault?.loc.kind !== 'FEEDER' && selectedFault?.loc.paths.map((path, i) => (
+          <Polyline key={i} positions={path} interactive={false} pathOptions={{ color: '#fecaca', weight: 5, opacity: 0.95, dashArray: selectedFault.loc.kind === 'RANGE' ? '6 6' : undefined }} />
+        ))}
 
-        {/* Feeder List */}
-        <div className="overflow-y-auto custom-scrollbar p-2 space-y-1">
-          <div className="px-2 pt-2 pb-1 text-xs font-bold uppercase tracking-wider text-slate-500">
-            Radial Feeders ({mapData.feeders.length})
-          </div>
-          {mapData.feeders.map(feeder => {
-            const isActive = activeFeederId === feeder.id;
-            return (
-              <button
-                key={feeder.id}
-                onClick={() => setActiveFeederId(isActive ? null : feeder.id)}
-                className={`w-full text-left px-3 py-2 rounded-lg transition-all flex items-center justify-between
-                  ${isActive 
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
-                    : 'hover:bg-slate-800 text-slate-400 border border-transparent'
-                  }`}
-              >
-                <span className="font-medium text-sm flex items-center gap-2">
-                  <Zap className={`w-4 h-4 ${isActive ? 'text-amber-400' : 'text-slate-600'}`} />
-                  {feeder.id}
-                </span>
-                {isActive && <EyeOff className="w-4 h-4 text-amber-500/70" />}
+        {faults.map(({ incident, loc }) => {
+          const selected = selectedIncident?.id === incident.id;
+          return (
+            <Marker
+              key={incident.id}
+              position={loc.pin}
+              zIndexOffset={selected ? 1000 : 800}
+              icon={faultIcon(selected)}
+              eventHandlers={{ click: stop(() => onSelect({ kind: 'incident', id: incident.id })) }}
+            >
+              <Tooltip direction="top" offset={[0, -14]}>{`${incident.type} fault: ${loc.title}`}</Tooltip>
+            </Marker>
+          );
+        })}
+      </MapContainer>
+
+      {/* Layer control */}
+      <div className="absolute top-3 right-3 z-[1000]">
+        {layersOpen ? (
+          <div className="w-56 bg-slate-900/95 border border-slate-700 rounded-md shadow-xl text-sm">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800">
+              <span className="font-medium text-slate-200">Map layers</span>
+              <button onClick={() => setLayersOpen(false)} className="text-slate-500 hover:text-slate-200" aria-label="Close layers">
+                <X className="w-4 h-4" />
               </button>
-            );
-          })}
-        </div>
+            </div>
+            <div className="p-3 space-y-2 text-slate-300">
+              {[
+                ['ht', '11 kV feeders'],
+                ['lt', 'LT lines'],
+                ['poles', 'Poles'],
+                ['inferredDashed', 'Dash inferred wiring'],
+              ].map(([key, label]) => (
+                <label key={key} className="flex items-center justify-between cursor-pointer">
+                  <span>{label}</span>
+                  <input type="checkbox" checked={layers[key]} onChange={() => toggleLayer(key)} className="accent-blue-500" />
+                </label>
+              ))}
+              <p className="text-[11px] text-slate-500 pt-1">Healthy poles appear from zoom {POLES_MIN_ZOOM}. Poles without supply always show.</p>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setLayersOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 bg-slate-900/95 border border-slate-700 rounded-md text-sm text-slate-200 hover:bg-slate-800 shadow-lg"
+          >
+            <Layers className="w-4 h-4" /> Layers
+          </button>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="absolute bottom-6 left-3 z-[1000] bg-slate-900/95 border border-slate-700 rounded-md shadow-lg text-[11px] text-slate-300">
+        <button
+          onClick={toggleLegend}
+          aria-expanded={legendOpen}
+          className="w-full flex items-center justify-between gap-4 px-3 py-1.5 text-slate-400 hover:text-slate-200"
+        >
+          <span className="text-[10px] font-semibold uppercase tracking-wider">Legend</span>
+          {legendOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+        </button>
+        {legendOpen && (
+          <div className="px-3 pt-1.5 pb-2 space-y-1 border-t border-slate-800">
+            {LEGEND_CONDITIONS.map((c) => (
+              <div key={c} className="flex items-center gap-2">
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full"
+                  style={c === 'unmonitored' ? { border: `1.5px solid ${CONDITION_COLORS[c]}` } : { background: CONDITION_COLORS[c] }}
+                />
+                {CONDITION_LABELS[c]}
+              </div>
+            ))}
+            <div className="flex items-center gap-2 pt-1 border-t border-slate-800">
+              <span className="inline-block w-4 h-1 rounded-sm" style={{ background: HT_COLOR }} /> 11 kV feeder
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-4 border-t border-dashed border-slate-400" /> Inferred LT wiring
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="fault-pin inline-flex" style={{ width: 14, height: 14 }} /> Fault location
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

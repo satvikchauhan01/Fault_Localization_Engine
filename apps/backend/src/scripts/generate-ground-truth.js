@@ -57,7 +57,26 @@ const DEFAULT_CONFIG = {
    * Default null means truly random (uses Date.now()).
    */
   seed: null,
+
+  substationName: 'Central 66/11 kV Substation',
+  // Layout, in metres. Feeders leave the substation along gently bending roads;
+  // DTs are tapped along them; each DT's LT network runs along a street grid.
+  firstDtDistanceM: 900,
+  dtSpacingM: 700,
+  feederBendMaxDeg: 8,
+  feederTailM: 250,
+  spanM: 38,              // LT pole-to-pole span
+  blockSpans: 3,          // a street every 3 spans, so ~114 m city blocks
+  ltOffsetM: 18,          // first LT pole sits across the road from its DT
+  ltHalfAlongSpans: 8,    // keeps a DT's network clear of its neighbours on the feeder
+  ltHalfAcrossSpans: 12,
+  missingStreetRatio: 0.12, // side streets with no LT line at all
+  poleJitterM: 3,
+  minPoleSeparationM: 20, // no pole of one DT this close to another DT's pole
 };
+
+// Real central-Bengaluru PIN codes, assigned by ward to keep areas coherent.
+const PINCODES = ['560001', '560002', '560004', '560009', '560025', '560027', '560042', '560046', '560051', '560052'];
 
 /**
  * Convert meters to latitude degrees (111,000 m ≈ 1°).
@@ -79,8 +98,60 @@ function metersToLonDegrees(meters, latDegrees) {
   return meters / (111000 * Math.cos(latRad));
 }
 
+function round6(x) {
+  return Number(x.toFixed(6));
+}
+
+/** Offsets a lat/lon by `north` / `east` metres. */
+function offset(lat, lon, north, east) {
+  return [lat + metersToLatDegrees(north), lon + metersToLonDegrees(east, lat)];
+}
+
+function mod(n, m) {
+  return ((n % m) + m) % m;
+}
+
+/**
+ * Buckets poles into square cells so "is another DT's pole within N metres?"
+ * only has to look at the 3x3 cells around a point.
+ */
+function createSpatialHash(cellM, refLat) {
+  const mPerLat = 111000;
+  const mPerLon = 111000 * Math.cos((refLat * Math.PI) / 180);
+  const cells = new Map();
+  const cellKey = (cx, cy) => `${cx}:${cy}`;
+  const toXY = (lat, lon) => [lat * mPerLat, lon * mPerLon];
+
+  return {
+    add(lat, lon, owner) {
+      const [x, y] = toXY(lat, lon);
+      const k = cellKey(Math.floor(x / cellM), Math.floor(y / cellM));
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k).push({ x, y, owner });
+    },
+    hasForeignWithin(lat, lon, owner, distM) {
+      const [x, y] = toXY(lat, lon);
+      const cx = Math.floor(x / cellM);
+      const cy = Math.floor(y / cellM);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const p of cells.get(cellKey(cx + dx, cy + dy)) || []) {
+            if (p.owner !== owner && Math.hypot(p.x - x, p.y - y) < distM) return true;
+          }
+        }
+      }
+      return false;
+    },
+  };
+}
+
 /**
  * Generates the complete synthetic ground-truth radial network.
+ *
+ * Layout: one substation; each feeder leaves it along a gently bending road
+ * with its DTs tapped along the way; each DT feeds an LT network that runs
+ * along a street grid (straight runs of poles, branching only at street
+ * intersections), grown outward from a root pole beside the DT.
  *
  * @param {Partial<typeof DEFAULT_CONFIG>} [config]
  * @returns {{ feeders: object[], transformers: object[], poles: object[], devices: object[] }}
@@ -88,36 +159,36 @@ function metersToLonDegrees(meters, latDegrees) {
 export function generateGroundTruthNetwork(config = {}) {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const rand = seededRandom(cfg.seed != null ? cfg.seed : Date.now() & 0xffffffff);
+  const between = (lo, hi) => lo + rand() * (hi - lo);
 
   const feeders = [];
   const transformers = [];
   const poles = [];
   const devices = [];
 
-  // ── 1. Create Feeders ──────────────────────────────────────────────────────
-  for (let i = 1; i <= cfg.feederCount; i++) {
-    feeders.push({ id: `feeder-${i}`, name: `Feeder Line ${i}` });
-  }
-
-  // ── 2. Distribute DTs across Feeders ───────────────────────────────────────
+  // ── 1. Feeders, and the DTs tapped along each one ───────────────────────────
+  const substation = [cfg.centerLat, cfg.centerLon];
   const dtsPerFeeder = Math.ceil(cfg.dtCount / cfg.feederCount);
+  const recordedDtCount = Math.round(cfg.dtCount * cfg.recordedTopologyRatio);
+  const bendRad = (cfg.feederBendMaxDeg * Math.PI) / 180;
+  const dtHeadings = [];
   let dtCounter = 1;
-  let dtIndexForRecorded = 0; // deterministic round-robin for topology labelling
 
-  for (let fIdx = 0; fIdx < feeders.length; fIdx++) {
-    const feeder = feeders[fIdx];
-    // Each feeder radiates in a different compass direction from city center
-    const feederAngle = (fIdx / cfg.feederCount) * 2 * Math.PI;
+  for (let fIdx = 0; fIdx < cfg.feederCount; fIdx++) {
+    const feederId = `feeder-${fIdx + 1}`;
+    // Bearing clockwise from north; feeders fan out evenly around the substation.
+    let heading = 0.35 + (fIdx / cfg.feederCount) * 2 * Math.PI;
+    let [lat, lon] = substation;
+    const route = [[round6(lat), round6(lon)]];
 
     for (let d = 0; d < dtsPerFeeder && dtCounter <= cfg.dtCount; d++) {
-      const dtId = `dt-${dtCounter}`;
-      // Small angular jitter so DTs don't stack on an exact radial
-      const dtAngle = feederAngle + (rand() - 0.5) * 0.3;
-      // DTs sit 0.5–7 km from city center, spaced ~800 m along feeder
-      const dtDistanceMeters = 500 + d * 800 + rand() * 200;
-
-      const dtLat = cfg.centerLat + metersToLatDegrees(dtDistanceMeters * Math.cos(dtAngle));
-      const dtLon = cfg.centerLon + metersToLonDegrees(dtDistanceMeters * Math.sin(dtAngle), cfg.centerLat);
+      let stepM = cfg.firstDtDistanceM;
+      if (d > 0) {
+        heading += between(-bendRad, bendRad);
+        stepM = cfg.dtSpacingM * between(0.92, 1.08);
+      }
+      [lat, lon] = offset(lat, lon, stepM * Math.cos(heading), stepM * Math.sin(heading));
+      route.push([round6(lat), round6(lon)]);
 
       /**
        * 'RECORDED': department has authoritative topology on file; registry will
@@ -127,111 +198,128 @@ export function generateGroundTruthNetwork(config = {}) {
        * 'INFERRED' is NOT a ground-truth label — it is assigned by the runtime
        *   Topology Service (Step 8) after it runs MST inference.
        */
-      const isRecorded = dtIndexForRecorded < Math.round(cfg.dtCount * cfg.recordedTopologyRatio);
-      const topology_source = isRecorded ? 'RECORDED' : 'MISSING';
-
       transformers.push({
-        id: dtId,
-        feeder_id: feeder.id,
-        lat: Number(dtLat.toFixed(6)),
-        lon: Number(dtLon.toFixed(6)),
+        id: `dt-${dtCounter}`,
+        feeder_id: feederId,
+        lat: round6(lat),
+        lon: round6(lon),
         capacity_kva: [100, 250, 500][Math.floor(rand() * 3)],
         households_served: Math.floor(40 + rand() * 80),
-        topology_source,
+        topology_source: dtCounter <= recordedDtCount ? 'RECORDED' : 'MISSING',
       });
-
+      dtHeadings.push(heading);
       dtCounter++;
-      dtIndexForRecorded++;
     }
+
+    const [tailLat, tailLon] = offset(lat, lon, cfg.feederTailM * Math.cos(heading), cfg.feederTailM * Math.sin(heading));
+    route.push([round6(tailLat), round6(tailLon)]);
+
+    feeders.push({
+      id: feederId,
+      name: `11 kV Feeder ${fIdx + 1}`,
+      substation: cfg.substationName,
+      route,
+    });
   }
 
-  // ── 3. Generate Poles for each DT ──────────────────────────────────────────
-  const polesPerDt = Math.floor(cfg.targetPoleCount / transformers.length);
+  // ── 2. LT network per DT, grown along a street grid ────────────────────────
+  // Lattice in the DT's local frame (i along the feeder road, j across it). Only
+  // street nodes hold poles, so lines run straight and branch at intersections.
+  const polesPerDt = Math.floor(cfg.targetPoleCount / Math.max(transformers.length, 1));
+  const occupied = createSpatialHash(cfg.minPoleSeparationM, cfg.centerLat);
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   let poleCounter = 1;
-  let deviceCounter = 1;
 
-  for (const dt of transformers) {
+  transformers.forEach((dt, dtIdx) => {
+    const heading = dtHeadings[dtIdx];
+    const wardIdx = Math.floor(dtIdx / 2);
+    const ward = `Ward ${wardIdx + 1}`;
+    const wardPincode = PINCODES[wardIdx % PINCODES.length];
+
+    const toLatLon = (alongM, acrossM) => {
+      const north = alongM * Math.cos(heading) - acrossM * Math.sin(heading);
+      const east = alongM * Math.sin(heading) + acrossM * Math.cos(heading);
+      return offset(dt.lat, dt.lon, north, east);
+    };
+    // Each side street gets its own extent (and a few get none), so neighbourhoods
+    // differ; the two main streets through the root always run the full width.
+    const streetSpan = (index, halfLen) => {
+      if (index === 0) return [-halfLen, halfLen];
+      if (rand() < cfg.missingStreetRatio) return null;
+      return [-Math.round(halfLen * between(0.45, 1)), Math.round(halfLen * between(0.45, 1))];
+    };
+    const rowSpans = new Map();
+    const colSpans = new Map();
+    for (let j = -cfg.ltHalfAcrossSpans; j <= cfg.ltHalfAcrossSpans; j++) {
+      if (mod(j, cfg.blockSpans) === 0) rowSpans.set(j, streetSpan(j, cfg.ltHalfAlongSpans));
+    }
+    for (let i = -cfg.ltHalfAlongSpans; i <= cfg.ltHalfAlongSpans; i++) {
+      if (mod(i, cfg.blockSpans) === 0) colSpans.set(i, streetSpan(i, cfg.ltHalfAcrossSpans));
+    }
+    const within = (span, x) => span != null && x >= span[0] && x <= span[1];
+    const onStreet = (i, j) => within(rowSpans.get(j), i) || within(colSpans.get(i), j);
+    const inArea = (i, j) => Math.abs(i) <= cfg.ltHalfAlongSpans && Math.abs(j) <= cfg.ltHalfAcrossSpans;
+    const nodeKey = (i, j) => `${i},${j}`;
+
     const dtPoles = [];
+    const taken = new Set();
+    const frontier = [];
 
-    // ── 3a. Root pole (adjacent to DT, always seq=1, no parent) ──
-    const rootPoleId = `pole-${poleCounter++}`;
-    // Root is placed ~20-30 m from DT in a random direction
-    const rootAngle = rand() * 2 * Math.PI;
-    const rootDistM = 20 + rand() * 10;
-    const rootLat = dt.lat + metersToLatDegrees(rootDistM * Math.cos(rootAngle));
-    const rootLon = dt.lon + metersToLonDegrees(rootDistM * Math.sin(rootAngle), dt.lat);
+    const place = (i, j, parent, dir, force) => {
+      const jitter = () => between(-cfg.poleJitterM, cfg.poleJitterM);
+      const [lat, lon] = toLatLon(i * cfg.spanM + jitter(), cfg.ltOffsetM + j * cfg.spanM + jitter());
+      if (!force && occupied.hasForeignWithin(lat, lon, dt.id, cfg.minPoleSeparationM)) return false;
 
-    dtPoles.push({
-      id: rootPoleId,
-      dt_id: dt.id,
-      feeder_id: dt.feeder_id,
-      lat: Number(rootLat.toFixed(6)),
-      lon: Number(rootLon.toFixed(6)),
-      seq_on_line: 1,
-      parent_pole_id: null, // root of DT subtree
-      ward: `Ward ${Math.floor(1 + rand() * 10)}`,
-      pincode: rand() < cfg.missingPincodeRatio ? null : '560001',
-      device_id: null,
-    });
+      const pole = {
+        id: `pole-${poleCounter++}`,
+        dt_id: dt.id,
+        feeder_id: dt.feeder_id,
+        lat: round6(lat),
+        lon: round6(lon),
+        seq_on_line: parent ? parent.seq_on_line + 1 : 1,
+        parent_pole_id: parent ? parent.id : null, // GROUND-TRUTH physical parent; stripped for MISSING-topology DTs in Step 5
+        ward,
+        pincode: rand() < cfg.missingPincodeRatio ? null : wardPincode,
+        device_id: null,
+      };
+      dtPoles.push(pole);
+      occupied.add(lat, lon, dt.id);
 
-    // ── 3b. Grow tree via BFS, controlled branching ──────────────────────────
-    // Queue holds indices into dtPoles (not objects) to avoid reference drift.
-    const queue = [0];
-
-    while (dtPoles.length < polesPerDt && queue.length > 0) {
-      const parentIdx = queue.shift();
-      const parent = dtPoles[parentIdx];
-      const remaining = polesPerDt - dtPoles.length;
-
-      /**
-       * Branching control: depth-1 nodes (root's direct children) may branch
-       * 1–4. All deeper nodes are mostly chains (1 child), occasionally 2.
-       * This avoids the "aggressively bushy" problem described in the review.
-       */
-      const isNearRoot = parent.seq_on_line <= 2;
-      const maxBranch = isNearRoot ? 4 : 2;
-      const branchCount = Math.min(Math.floor(1 + rand() * maxBranch), remaining);
-
-      // Determine base propagation direction from DT→parent vector
-      const dLat = parent.lat - dt.lat;
-      const dLon = parent.lon - dt.lon;
-      const baseAngle = Math.atan2(dLon, dLat);
-
-      for (let b = 0; b < branchCount; b++) {
-        const childPoleId = `pole-${poleCounter++}`;
-        // Spread branches symmetrically, with small random jitter
-        const spreadAngle =
-          baseAngle +
-          (branchCount > 1 ? ((b - (branchCount - 1) / 2) * 0.35) : 0) +
-          (rand() - 0.5) * 0.1;
-
-        // 25–50 m per pole span — realistic LT line spacing
-        const stepM = 25 + rand() * 25;
-        const childLat = parent.lat + metersToLatDegrees(stepM * Math.cos(spreadAngle));
-        const childLon = parent.lon + metersToLonDegrees(stepM * Math.sin(spreadAngle), parent.lat);
-
-        const childIdx = dtPoles.length;
-        dtPoles.push({
-          id: childPoleId,
-          dt_id: dt.id,
-          feeder_id: dt.feeder_id,
-          lat: Number(childLat.toFixed(6)),
-          lon: Number(childLon.toFixed(6)),
-          seq_on_line: parent.seq_on_line + 1,
-          parent_pole_id: parent.id, // GROUND-TRUTH physical parent; stripped for MISSING-topology DTs in Step 5
-          ward: parent.ward,
-          pincode: rand() < cfg.missingPincodeRatio ? null : '560001',
-          device_id: null,
+      for (const [di, dj] of DIRS) {
+        const ni = i + di;
+        const nj = j + dj;
+        if (!inArea(ni, nj) || !onStreet(ni, nj) || taken.has(nodeKey(ni, nj))) continue;
+        const straight = dir !== null && dir[0] === di && dir[1] === dj;
+        frontier.push({
+          i: ni,
+          j: nj,
+          parent: pole,
+          dir: [di, dj],
+          score: pole.seq_on_line + (straight ? 0 : 0.6) + rand() * 2.5,
         });
-
-        queue.push(childIdx);
       }
+      return true;
+    };
+
+    taken.add(nodeKey(0, 0));
+    place(0, 0, null, null, true);
+
+    while (dtPoles.length < polesPerDt && frontier.length > 0) {
+      let best = 0;
+      for (let k = 1; k < frontier.length; k++) {
+        if (frontier[k].score < frontier[best].score) best = k;
+      }
+      const cand = frontier.splice(best, 1)[0];
+      const k = nodeKey(cand.i, cand.j);
+      if (taken.has(k)) continue;
+      taken.add(k); // placed, or blocked by a neighbouring DT's network
+      place(cand.i, cand.j, cand.parent, cand.dir, false);
     }
 
-    // ── 3c. Attach devices and push to global poles array ────────────────────
+    // ── 3. Attach devices and push to global poles array ────────────────────
     for (const p of dtPoles) {
       if (rand() >= cfg.noDeviceRatio) {
-        const devId = `dev-${deviceCounter++}`;
+        const devId = `dev-${devices.length + 1}`;
         const fwVersion = rand() < cfg.fw12Ratio ? '1.2.4' : '1.3.2';
         const nowIso = new Date().toISOString();
         p.device_id = devId;
@@ -245,7 +333,7 @@ export function generateGroundTruthNetwork(config = {}) {
       }
       poles.push(p);
     }
-  }
+  });
 
   return { feeders, transformers, poles, devices };
 }

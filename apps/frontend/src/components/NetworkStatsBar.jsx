@@ -105,13 +105,13 @@ export default function NetworkStatsBar({ incidents, mapData, outages = [], isLo
   ];
 
   return (
-    <div className="flex-shrink-0 px-6 py-3 border-b border-slate-800/80 bg-slate-900/40 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+    <div className="flex-shrink-0 border-b border-slate-800/80 bg-slate-900/40 flex gap-2 overflow-x-auto custom-scrollbar px-3 py-2 sm:grid sm:grid-cols-3 sm:gap-3 sm:px-6 sm:py-3 lg:grid-cols-5">
       {tiles.map((t) => (
-        <div key={t.label} className="flex items-center gap-3 bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-2 min-w-0">
+        <div key={t.label} className="flex-shrink-0 w-44 sm:w-auto flex items-center gap-3 bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-2 min-w-0">
           <t.icon className={`w-5 h-5 flex-shrink-0 ${t.color}`} />
           <div className="min-w-0">
             <div className={`text-lg font-bold leading-none ${isLoading ? 'text-slate-600 animate-pulse' : 'text-white'}`}>
-              {isLoading ? '—' : t.value}
+              {isLoading ? '...' : t.value}
             </div>
             <div className="text-[10px] text-slate-500 uppercase tracking-wide truncate">{t.label}</div>
             <div className="text-[10px] text-slate-600 truncate mt-0.5">{t.sub}</div>

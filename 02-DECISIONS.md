@@ -36,13 +36,13 @@ This document records the key architectural decisions made during the design and
 - **Positive**: The engine can seamlessly localize faults even in unmapped areas.
 - **Negative**: Real electrical lines follow roads, not straight lines. Inferences can be wrong. The confidence engine strictly downgrades any incident relying on inferred topology to `MEDIUM` or `LOW` confidence to warn operators.
 
-## 5. Non-Destructive Incident Idempotency
+## 5. One Outage, One Ticket (Incident Merging)
 
-**Context**: A fault can evolve. A single wire snapping (`SPAN` fault) might eventually cause the whole transformer to trip (`DT` fault).
-**Decision**: `incident-sync.js` computes new incidents and checks for overlapping `affected_pole_ids` with active tickets. If it finds an overlap, it merges the new scope into the existing incident rather than opening a duplicate ticket.
+**Context**: A fault can evolve. A single wire snapping (`SPAN` fault) might eventually cause the whole transformer to trip (`DT` fault). A feeder fault is worse: poles finish their 90 s debounce one by one, so localization briefly sees several SPAN and DT faults before the feeder rollup fires. Earlier versions opened a ticket for each intermediate result, then left the extras behind (they surfaced in Incident History as phantom tickets).
+**Decision**: `incident-sync.js` runs under a transaction-scoped advisory lock and checks every new incident for overlapping `affected_pole_ids` with active incidents. One overlap is updated in place. Several overlaps are merged into one survivor (the ticket furthest along the workflow, then the oldest), and the absorbed incidents are deleted with their tickets. Their poles are kept in the survivor's `historical_affected_pole_ids`, and the survivor keeps the earliest detection time.
 **Consequences**:
-- **Positive**: Operators aren't spammed with multiple tickets as a fault cascades upstream or downstream. The history of affected poles is preserved.
-- **Negative**: Edge cases involving two separate, simultaneous faults on adjacent branches could theoretically be merged into one ticket.
+- **Positive**: Operators get exactly one ticket per outage, and history shows exactly one entry, however the fault evolved.
+- **Negative**: Intermediate incidents are not kept as separate records. Two separate, simultaneous faults on adjacent branches that overlap could be merged into one ticket.
 
 ## 6. Scheduled Outages Lower Confidence, Not Visibility
 
@@ -67,3 +67,11 @@ This document records the key architectural decisions made during the design and
 **Consequences**:
 - **Positive**: The pipeline treats the simulator exactly like a real hardware deployment.
 - **Negative**: The worker process bundles both the ingestion loop and the simulator heartbeat emitter, which uses slightly more CPU than a pure worker would in production.
+
+## 9. Silence Counts Only While the Worker Is Listening
+
+**Context**: The heartbeat timeout (32 min) reads `device.last_seen`. If the worker is stopped, or the host sleeps, no telemetry is processed, so every device looks silent when it comes back and the sweeper would declare the whole network dark at once.
+**Decision**: The sweeper tracks `listeningSince`: the worker start time, reset whenever two sweeps are more than 2 minutes apart. A device's effective last-seen is `max(last_seen, listeningSince)`. Events that sat in the inbox backlog are also never timed out inline by the ingestion worker.
+**Consequences**:
+- **Positive**: Restarts, deploys and host sleep do not create mass false outages.
+- **Negative**: A pole that genuinely lost supply during the downtime (and whose sensor cannot send `power_lost`) is detected up to 32 minutes after the worker resumes, not immediately.

@@ -109,8 +109,8 @@ export default function SettingsPanel({ onClose, preferences, updatePreference, 
             <div className="space-y-3">
               <label className="flex items-center justify-between cursor-pointer">
                 <div>
-                  <div className="text-sm text-slate-300">Auto-open new incidents</div>
-                  <div className="text-xs text-slate-600">Jump to the detail panel when a fault you just injected produces an incident.</div>
+                  <div className="text-sm text-slate-300">Open new faults automatically</div>
+                  <div className="text-xs text-slate-600">Locate a newly detected fault on the map when nothing else is selected. Otherwise a notification offers to locate it.</div>
                 </div>
                 <Toggle
                   checked={preferences.autoSelectNewIncident}

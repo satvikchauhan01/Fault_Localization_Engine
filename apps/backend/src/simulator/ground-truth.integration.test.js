@@ -246,7 +246,7 @@ describe('Fault injection via API → pipeline → incident', () => {
       // confirm CONFIRMED_DARK rather than waiting 90 real seconds.
       const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
       const payload = {
-        ...buildTelemetryPayload(pole, device, 'power_lost', Date.now() % 2_000_000_000),
+        ...buildTelemetryPayload(pole, device, 'power_lost'),
         device_ts: twoMinsAgo,
         server_received_at: twoMinsAgo,
       };
@@ -484,7 +484,7 @@ describe('Missing-Topology DT: Simulator uses ground truth, production does not'
       const device = deviceMap.get(pole.id);
       if (!device) continue;
       
-      const payload = buildTelemetryPayload(pole, device, 'power_lost', Date.now() % 2_000_000_000);
+      const payload = buildTelemetryPayload(pole, device, 'power_lost');
       const resp = await app.inject({
         method: 'POST',
         url: '/telemetry',
@@ -624,10 +624,9 @@ describe('Heartbeat realism — Test B: fw1.2 device under active fault is skipp
     // We only care about the skip counts, not actual emission success.
     const result = await emitHealthyHeartbeats('http://127.0.0.1:1', prisma);
 
-    // Then: the fw1.2 device is counted in skippedLegacy (fw<1.3 always skipped).
-    // fw>=1.3 devices under the fault go to skippedFault.
-    expect(result.skippedLegacy).toBeGreaterThanOrEqual(1);
-    // The fw1.2 device itself was NOT emitted to (correct — it never heartbeats).
+    // Then: skipped for being under the fault, not for its firmware.
+    expect(result.skippedFault).toBeGreaterThanOrEqual(1);
+    expect(result).not.toHaveProperty('skippedLegacy');
 
     // And: after HEARTBEAT_TIMEOUT_MS of silence, evaluateTimeout fires for the fw1.2 device.
     const staleTime = new Date(Date.now() - (HEARTBEAT_TIMEOUT_MS + 5 * 60 * 1_000));

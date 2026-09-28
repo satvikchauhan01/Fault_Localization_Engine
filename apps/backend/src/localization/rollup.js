@@ -23,13 +23,23 @@
  *
  * Note: "monitored poles" = poles with a device_id (the ~91% with devices).
  * Unmonitored poles (~9%) are excluded from both the numerator and denominator
- * of the threshold calculation — we cannot observe their state.
+ * of the threshold calculation — we cannot observe their state. A monitored
+ * pole whose firmware is known to be legacy (fw < 1.3) and that is not dark is
+ * excluded the same way: that firmware never reports power loss, so its LIVE
+ * status says nothing until the 32 min heartbeat timeout. (A legacy pole heard
+ * from after the fault started still vetoes the rollup like any LIVE pole.)
  */
 
 import {
   ROLLUP_THRESHOLD,
   CORRELATION_WINDOW_MS,
+  isLegacyFirmware,
 } from '../../../../packages/domain/src/thresholds.js';
+
+/** Dark poles, plus non-dark poles whose firmware can report a loss of power. */
+function isObservable(status, fwVersion) {
+  return status === 'CONFIRMED_DARK' || !isLegacyFirmware(fwVersion);
+}
 
 /**
  * @typedef {Object} RollupResult
@@ -37,7 +47,7 @@ import {
  * @property {string}   target_id        DT id (for DT_FAULT) or feeder id (for FEEDER_FAULT)
  * @property {string[]} affected_pole_ids All dark monitored poles contributing to this rollup
  * @property {number}   dark_count        Number of dark monitored poles
- * @property {number}   monitored_count   Total monitored poles in scope
+ * @property {number}   monitored_count   Observable monitored poles in scope (the ratio's denominator)
  * @property {number}   dark_ratio        dark_count / monitored_count
  * @property {boolean}  has_live_pole     True if any monitored pole in scope is LIVE
  */
@@ -48,7 +58,7 @@ import {
  * @param {string}                         dtId
  * @param {string[]}                       poleMemberIds   All pole IDs belonging to this DT
  * @param {Map<string,{status:string,last_confirmed_at?:number}>} poleStates Current observed pole states
- * @param {Map<string,{device_id:string}>} poleMap         Registry pole metadata
+ * @param {Map<string,{device_id:string, fw_version?:string|null}>} poleMap Registry pole metadata
  * @param {number|null}                    [currentTime]   Current time or reference timestamp (ms)
  * @param {number}                         [windowMs]      Correlation window duration (ms)
  * @returns {RollupResult|null}  null if threshold not met
@@ -123,8 +133,12 @@ export function evaluateDtRollup(
 
   const correlatedDarkPoleIds = correlatedDarkPoles.map((p) => p.id);
 
+  const observableCount = monitoredPoleIds.filter((id) =>
+    isObservable(poleStates.get(id)?.status, poleMap.get(id).fw_version)
+  ).length;
+
   const darkCount = correlatedDarkPoleIds.length;
-  const darkRatio = darkCount / monitoredPoleIds.length;
+  const darkRatio = darkCount / observableCount;
 
   // Rule 5: ≥90% dark within window AND no LIVE pole observed
   if (darkRatio >= ROLLUP_THRESHOLD) {
@@ -133,7 +147,7 @@ export function evaluateDtRollup(
       target_id: dtId,
       affected_pole_ids: correlatedDarkPoleIds,
       dark_count: darkCount,
-      monitored_count: monitoredPoleIds.length,
+      monitored_count: observableCount,
       dark_ratio: darkRatio,
       has_live_pole: false,
     };
@@ -175,8 +189,8 @@ export function evaluateFeederRollup(
     dtRollups.set(dtId, dtResult);
   }
 
-  // Now evaluate the feeder as a whole — aggregate all monitored poles
-  let totalMonitored = 0;
+  // Now evaluate the feeder as a whole — aggregate all observable monitored poles
+  let observableCount = 0;
   let feederHasLive = false;
   const feederDarkPoles = [];
   const feederLivePoles = [];
@@ -189,9 +203,9 @@ export function evaluateFeederRollup(
       const isMonitored = pole && pole.device_id !== null;
       if (!isMonitored) continue; // unmonitored — skip
 
-      totalMonitored++;
       const state = poleStates.get(id);
       const status = state ? state.status : null;
+      if (isObservable(status, pole.fw_version)) observableCount++;
       const lastConfirmedAt = state && typeof state.last_confirmed_at === 'number' ? state.last_confirmed_at : 0;
 
       if (status === 'CONFIRMED_DARK') {
@@ -202,7 +216,7 @@ export function evaluateFeederRollup(
     }
   }
 
-  if (totalMonitored === 0 || feederDarkPoles.length === 0) {
+  if (observableCount === 0 || feederDarkPoles.length === 0) {
     return { feederRollup: null, dtRollups };
   }
 
@@ -234,16 +248,16 @@ export function evaluateFeederRollup(
   const correlatedDarkPoleIds = correlatedDarkPoles.map((p) => p.id);
 
   const totalDark = correlatedDarkPoleIds.length;
-  const feederDarkRatio = totalDark / totalMonitored;
+  const feederDarkRatio = totalDark / observableCount;
 
-  // Rule 6: ≥90% of all monitored poles on the feeder are dark within window, no LIVE pole anywhere
+  // Rule 6: ≥90% of all observable monitored poles on the feeder are dark within window, no LIVE pole anywhere
   if (feederDarkRatio >= ROLLUP_THRESHOLD) {
     const feederRollup = {
       type: 'FEEDER_FAULT',
       target_id: feederId,
       affected_pole_ids: correlatedDarkPoleIds,
       dark_count: totalDark,
-      monitored_count: totalMonitored,
+      monitored_count: observableCount,
       dark_ratio: feederDarkRatio,
       has_live_pole: false,
     };

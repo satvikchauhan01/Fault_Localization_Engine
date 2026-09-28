@@ -54,6 +54,21 @@ export const HEARTBEAT_TIMEOUT_MS = 32 * 60 * 1_000;
  */
 export const FW_LEGACY_THRESHOLD = '1.3';
 
+/**
+ * True only for a firmware string known to be below FW_LEGACY_THRESHOLD.
+ * Compared numerically ('1.10' is newer than '1.3'). Unknown firmware is not
+ * treated as legacy.
+ *
+ * @param {string|null|undefined} fw
+ * @returns {boolean}
+ */
+export function isLegacyFirmware(fw) {
+  if (!fw || typeof fw !== 'string') return false;
+  const [major = 0, minor = 0] = fw.split('.').map((p) => parseInt(p, 10) || 0);
+  const [minMajor, minMinor] = FW_LEGACY_THRESHOLD.split('.').map((p) => parseInt(p, 10));
+  return major < minMajor || (major === minMajor && minor < minMinor);
+}
+
 // ─── DT / Feeder Rollup ───────────────────────────────────────────────────────
 
 /**

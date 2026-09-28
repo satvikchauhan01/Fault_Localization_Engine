@@ -16,6 +16,7 @@ export function useMapData(pollingIntervalMs = 5000) {
     transformers: [],
     poles: [],
     topology_edges: [],
+    devices: [],
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -105,7 +106,7 @@ export function useMapData(pollingIntervalMs = 5000) {
  * @returns {object}
  */
 function mergeTopologyAndState(topology, poleStates) {
-  if (!topology) return { feeders: [], transformers: [], poles: [], topology_edges: [] };
+  if (!topology) return { feeders: [], transformers: [], poles: [], topology_edges: [], devices: [] };
 
   const stateMap = new Map((poleStates || []).map(s => [s.pole_id, s]));
   const poles = (topology.poles || []).map(p => ({
@@ -118,5 +119,6 @@ function mergeTopologyAndState(topology, poleStates) {
     transformers: topology.transformers || [],
     poles,
     topology_edges: topology.topology_edges || [],
+    devices: topology.devices || [],
   };
 }

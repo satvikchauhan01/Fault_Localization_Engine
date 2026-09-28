@@ -68,7 +68,7 @@ export default function NotificationBell({ incidents, onSelectIncident }) {
                   <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-slate-200 font-medium truncate">
-                      {incident.type} FAULT — {getIncidentLabel(incident)}
+                      {incident.type} FAULT: {getIncidentLabel(incident)}
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
                       <span className="flex items-center gap-1"><Zap className="w-3 h-3" />{incident.affected_count} poles</span>

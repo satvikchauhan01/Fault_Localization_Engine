@@ -372,6 +372,61 @@ describe('expandRangeIncident — Section G/H Rule 7', () => {
   });
 
   // ── buildRangeIncidents: batch expansion ─────────────────────────────────────
+  // ── Frontier stopped BELOW an unmonitored pole (missing_side: 'parent') ─────
+  //   P_live → U_mid(unmonitored) → { D1, D2 } (both monitored, dark)
+  // The frontier assumes U_mid is live, but nothing observed it, so the break
+  // may be P_live→U_mid: the range must reach up to P_live and include U_mid.
+  describe('unmonitored frontier parent → walk up to the nearest monitored LIVE ancestor', () => {
+    const childrenOf = makeChildrenOf([['P_live', 'U_mid'], ['U_mid', 'D1'], ['U_mid', 'D2']]);
+    const poleStates = makeStateMap([
+      ['P_live', 'LIVE'],
+      ['D1', 'CONFIRMED_DARK'],
+      ['D2', 'CONFIRMED_DARK'],
+    ]);
+    const poleMap = makePoleMap([
+      ['P_live', 'dev-live'],
+      ['U_mid', null],
+      ['D1', 'dev-d1'],
+      ['D2', 'dev-d2'],
+    ]);
+    const edgeMap = makeEdgeMap([
+      ['P_live', 'U_mid'],
+      ['U_mid', 'D1'],
+      ['U_mid', 'D2'],
+    ]);
+
+    it('bounds upstream at the monitored LIVE ancestor instead of null', () => {
+      const edge = { parent_pole_id: 'U_mid', child_pole_id: 'D1', missing_side: 'parent' };
+      const result = expandRangeIncident(edge, childrenOf, poleStates, poleMap, edgeMap);
+      expect(result.upstream_live_pole_id).toBe('P_live');
+    });
+
+    it('puts the unmonitored pole above the dark boundary into the gap and affected set', () => {
+      const edge = { parent_pole_id: 'U_mid', child_pole_id: 'D1', missing_side: 'parent' };
+      const result = expandRangeIncident(edge, childrenOf, poleStates, poleMap, edgeMap);
+      expect(result.unmonitored_pole_ids).toEqual(['U_mid']);
+      expect(result.affected_pole_ids).toContain('U_mid');
+      expect(result.gap_pole_count).toBe(2);
+    });
+
+    it('gives sibling frontier edges under the same unmonitored pole the same upstream bound', () => {
+      const r1 = expandRangeIncident({ parent_pole_id: 'U_mid', child_pole_id: 'D1', missing_side: 'parent' }, childrenOf, poleStates, poleMap, edgeMap);
+      const r2 = expandRangeIncident({ parent_pole_id: 'U_mid', child_pole_id: 'D2', missing_side: 'parent' }, childrenOf, poleStates, poleMap, edgeMap);
+      expect(r1.upstream_live_pole_id).toBe(r2.upstream_live_pole_id);
+    });
+
+    it('propagates INFERRED from an edge on the upward path', () => {
+      const inferredEdges = makeEdgeMap([
+        ['P_live', 'U_mid', 'INFERRED', true],
+        ['U_mid', 'D1'],
+      ]);
+      const edge = { parent_pole_id: 'U_mid', child_pole_id: 'D1', missing_side: 'parent' };
+      const result = expandRangeIncident(edge, childrenOf, poleStates, poleMap, inferredEdges);
+      expect(result.topology_source).toBe('INFERRED');
+      expect(result.ambiguous).toBe(true);
+    });
+  });
+
   describe('buildRangeIncidents — batch expansion', () => {
     it('maps multiple range edges to multiple RANGE incidents', () => {
       const edge1 = { parent_pole_id: 'A_live', child_pole_id: 'A_gap', missing_side: 'child' };
